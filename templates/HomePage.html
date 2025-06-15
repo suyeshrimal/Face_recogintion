@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Attendify</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet"
+    integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" crossorigin="anonymous">
+
+  <style>
+    body {
+      background-image: url('static/images/BG-image.png');
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      height: 100vh;
+      color: black;
+    }
+
+    h1.page-title {
+      font-size: 44px;
+      font-weight: bold;
+    }
+
+    .card {
+      width: 18rem;
+      background-color: rgba(61, 111, 143, 0.6);
+      transition: transform 0.3s ease;
+      margin: auto;
+    }
+
+    .card:hover {
+      transform: scale(1.03);
+    }
+
+    .card img {
+      border-top-left-radius: 0.5rem;
+      border-top-right-radius: 0.5rem;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container text-center mt-5">
+    <h1 class="text-white fw-bold page-title">Attendify</h1>
+
+    <div class="container mt-5">
+      <div class="row justify-content-center g-4">
+
+        <!-- Take Attendance -->
+        <div class="col-md-4">
+          <div class="card">
+            <img src="static/images/attendance.png" class="card-img-top" alt="Attendance">
+            <div class="card-body text-center">
+              <a href="#" class="btn btn-primary">Take Attendance</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- Admin Panel -->
+        <div class="col-md-4">
+          <div class="card">
+            <img src="static/images/admin.png" class="card-img-top" alt="Admin Panel">
+            <div class="card-body text-center">
+              <a href="#" class="btn btn-primary">Admin Panel</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- Attendance List -->
+        <div class="col-md-4">
+          <div class="card">
+            <img src="static/images/attendance_list.png" class="card-img-top" alt="Attendance List">
+            <div class="card-body text-center">
+              <a href="#" class="btn btn-primary">Attendance List</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- Registered Users -->
+        <div class="col-md-4">
+          <div class="card">
+            <img src="static/images/registered_users.png" class="card-img-top" alt="Registered Users">
+            <div class="card-body text-center">
+              <a href="#" class="btn btn-primary">Registered Users</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- Unregistered Users -->
+        <div class="col-md-4">
+          <div class="card">
+            <img src="static/images/unregistered_users.png" class="card-img-top" alt="Unregistered Users">
+            <div class="card-body text-center">
+              <a href="#" class="btn btn-primary">Unregistered Users</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- LogOut -->
+        <div class="col-md-4">
+          <div class="card">
+            <img src="static/images/logout.png" class="card-img-top" alt="Logout">
+            <div class="card-body text-center">
+              <a href="#" class="btn btn-primary">Logout</a>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/js/bootstrap.bundle.min.js"
+    integrity="sha384-MrcW6ZMFYlzcLA8Nl+NtUVF0sA7MsXsP1UyJoMp4YLEuNSfAP+JcXn/tWtIaxVXM"
+    crossorigin="anonymous"></script>
+</body>
+
+</html>
