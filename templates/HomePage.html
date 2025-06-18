@@ -14,6 +14,7 @@
       background-size: cover;
       background-position: center;
       background-repeat: no-repeat;
+      background-attachment: fixed;
       height: 100vh;
       color: black;
     }
@@ -21,13 +22,25 @@
     h1.page-title {
       font-size: 44px;
       font-weight: bold;
+      text-align: center;
+    }
+
+    .row {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .col{
+      margin-bottom: 50px;
+      width: 10cm;
+      height: 10cm%;
     }
 
     .card {
-      width: 18rem;
+      width: 80%;
       background-color: rgba(61, 111, 143, 0.6);
       transition: transform 0.3s ease;
-      margin: auto;
     }
 
     .card:hover {
@@ -35,21 +48,54 @@
     }
 
     .card img {
+      padding: 20px;
       border-top-left-radius: 0.5rem;
       border-top-right-radius: 0.5rem;
+     
+      align-self: center;
+      attachment: fixed;
+    }
+
+    .card-body {
+      text-align: center;
+    }
+
+    .text-link {
+      color: #FFFFFF;
+      text-decoration: none;
+    }
+
+    a:hover.text-link {
+      color: #FFFFFF;
+      text-decoration: none;
+    }
+
+    .btn-primary {
+      background-color: #3d6f8f;
+      border-color: #3d6f8f;
+      width: 100%;
+      height: 50px;
+      font-size: 18px;
+    }
+
+    .btn-primary:hover {
+      background-color: #2c4e66;
+      border-color: #2c4e66;
     }
   </style>
 </head>
 
 <body>
   <div class="container text-center mt-5">
-    <h1 class="text-white fw-bold page-title">Attendify</h1>
+    <h1 class="text-white fw-bold page-title">
+      <a href="#" class="text-link">Attendify</a>
+    </h1>
 
     <div class="container mt-5">
-      <div class="row justify-content-center g-4">
+      <div class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-4">
 
-        <!-- Take Attendance -->
-        <div class="col-md-4">
+        <!-- Take Attendance Card -->
+        <div class="col">
           <div class="card">
             <img src="static/images/attendance.png" class="card-img-top" alt="Attendance">
             <div class="card-body text-center">
@@ -58,8 +104,8 @@
           </div>
         </div>
 
-        <!-- Admin Panel -->
-        <div class="col-md-4">
+        <!-- Admin Panel Card -->
+        <div class="col">
           <div class="card">
             <img src="static/images/admin.png" class="card-img-top" alt="Admin Panel">
             <div class="card-body text-center">
@@ -68,8 +114,18 @@
           </div>
         </div>
 
-        <!-- Attendance List -->
-        <div class="col-md-4">
+        <!-- Add New User Card -->
+        <div class="col">
+          <div class="card">
+            <img src="static/images/add_new_user.png" class="card-img-top" alt="Add New User">
+            <div class="card-body text-center">
+              <a href="#" class="btn btn-primary">Add New User</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- Attendance List Card -->
+        <div class="col">
           <div class="card">
             <img src="static/images/attendance_list.png" class="card-img-top" alt="Attendance List">
             <div class="card-body text-center">
@@ -78,28 +134,28 @@
           </div>
         </div>
 
-        <!-- Registered Users -->
-        <div class="col-md-4">
+        <!-- Registered Users Card -->
+        <div class="col">
           <div class="card">
-            <img src="static/images/registered_users.png" class="card-img-top" alt="Registered Users">
+            <img src="static/images/register_user.png" class="card-img-top" alt="Registered Users">
             <div class="card-body text-center">
               <a href="#" class="btn btn-primary">Registered Users</a>
             </div>
           </div>
         </div>
 
-        <!-- Unregistered Users -->
-        <div class="col-md-4">
+        <!-- Unregistered Users Card -->
+        <div class="col">
           <div class="card">
-            <img src="static/images/unregistered_users.png" class="card-img-top" alt="Unregistered Users">
+            <img src="static/images/unregister_user.png" class="card-img-top" alt="Unregistered Users">
             <div class="card-body text-center">
               <a href="#" class="btn btn-primary">Unregistered Users</a>
             </div>
           </div>
         </div>
 
-        <!-- LogOut -->
-        <div class="col-md-4">
+        <!-- Logout Card -->
+        <div class="col">
           <div class="card">
             <img src="static/images/logout.png" class="card-img-top" alt="Logout">
             <div class="card-body text-center">
