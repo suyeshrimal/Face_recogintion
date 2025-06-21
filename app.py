@@ -61,23 +61,23 @@ def home():
 @app.route('/attendance')
 def take_attendance():
     # your logic
-    return "Attendance Page"
+    return render_template('Attendance.html', admin=g.user is not None, datetoday=datetoday)
 
 @app.route('/adduser')
 def add_user():
-    return "Add User Page"
+    return render_template('AddUser.html', admin=g.user is not None)
 
 @app.route('/attendancelist')
 def attendance_list():
-    return "Attendance List Page"
+    return render_template('AttendanceList.html', admin=g.user is not None, datetoday=datetoday)
 
 @app.route('/registeruserlist')
 def register_user_list():
-    return "Registered Users Page"
+    return render_template('RegisterUserList.html', admin=g.user is not None)
 
 @app.route('/unregisteruserlist')
 def unregister_user_list():
-    return "Unregistered Users Page"
+    return render_template('UnregisterUserList.html', admin=g.user is not None)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
