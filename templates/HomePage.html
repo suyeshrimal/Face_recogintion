@@ -88,8 +88,12 @@
 <body>
   <div class="container text-center mt-5">
     <h1 class="text-white fw-bold page-title">
-      <a href="/" class="text-link">Attendify</a>
+      <a href="http://127.0.0.1:5001/" class="text-link">Attendify</a>
     </h1>
+
+{% if mess%}
+<p class="text-center" style="color: #1F0060; font-size: 24px;">{{ mess }}</p> 
+{% endif %}
 
     <div class="container mt-5">
       <div class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-4">
@@ -99,37 +103,43 @@
           <div class="card">
             <img src="static/images/attendance.png" class="card-img-top" alt="Attendance">
             <div class="card-body text-center">
-              <a href="#" class="btn btn-primary">Take Attendance</a>
+              <a href="/attendance" class="btn btn-primary">Take Attendance</a>
             </div>
           </div>
         </div>
 
+        {% if not admin %}
         <!-- Admin Panel Card -->
         <div class="col">
           <div class="card">
             <img src="static/images/admin.png" class="card-img-top" alt="Admin Panel">
             <div class="card-body text-center">
-              <a href="#" class="btn btn-primary">Admin Panel</a>
+              <a href="/login" class="btn btn-primary">Admin Panel</a>
             </div>
           </div>
         </div>
+        {% endif %}
 
-        <!-- Add New User Card -->
-        <div class="col">
-          <div class="card">
-            <img src="static/images/add_new_user.png" class="card-img-top" alt="Add New User">
-            <div class="card-body text-center">
-              <a href="#" class="btn btn-primary">Add New User</a>
-            </div>
-          </div>
-        </div>
-
+        {% if admin %}
+        
         <!-- Attendance List Card -->
         <div class="col">
           <div class="card">
             <img src="static/images/attendance_list.png" class="card-img-top" alt="Attendance List">
             <div class="card-body text-center">
-              <a href="#" class="btn btn-primary">Attendance List</a>
+              <a href="/attendance_list" class="btn btn-primary">Attendance List</a>
+            </div>
+          </div>
+        </div>
+        {% endif %}
+
+        {% if admin %}
+        <!-- Add New User Card -->
+        <div class="col">
+          <div class="card">
+            <img src="static/images/add_new_user.png" class="card-img-top" alt="Add New User">
+            <div class="card-body text-center">
+              <a href="/add_user" class="btn btn-primary">Add New User</a>
             </div>
           </div>
         </div>
@@ -139,7 +149,7 @@
           <div class="card">
             <img src="static/images/register_user.png" class="card-img-top" alt="Registered Users">
             <div class="card-body text-center">
-              <a href="#" class="btn btn-primary">Registered Users</a>
+              <a href="/register_user_list" class="btn btn-primary">Registered Users</a>
             </div>
           </div>
         </div>
@@ -149,7 +159,7 @@
           <div class="card">
             <img src="static/images/unregister_user.png" class="card-img-top" alt="Unregistered Users">
             <div class="card-body text-center">
-              <a href="#" class="btn btn-primary">Unregistered Users</a>
+              <a href="/unregister_user_list" class="btn btn-primary">Unregistered Users</a>
             </div>
           </div>
         </div>
@@ -159,10 +169,11 @@
           <div class="card">
             <img src="static/images/logout.png" class="card-img-top" alt="Logout">
             <div class="card-body text-center">
-              <a href="#" class="btn btn-primary">Logout</a>
+              <a href="/login" class="btn btn-primary">Logout</a>
             </div>
           </div>
         </div>
+        {% endif %}
 
       </div>
     </div>

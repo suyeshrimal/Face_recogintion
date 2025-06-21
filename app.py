@@ -33,19 +33,72 @@ datetoday2 = date.today().strftime("%d %B %Y")
 face_detector = cv2.CascadeClassifier('static/haarcascade_frontalface_default.xml')
 cap = cv2.VideoCapture(0)
 
+# ======= Check and Make Folders ========
+if not os.path.isdir('Attendance'):
+    os.makedirs('Attendance')
+if not os.path.isdir('UserList'):
+    os.makedirs('UserList')
+if not os.path.isdir('static/faces'):
+    os.makedirs('static/faces')
+if f'{datetoday}.csv' not in os.listdir('Attendance'):
+    with open(f'Attendance/{datetoday}.csv', 'w') as f:
+        f.write('Name,ID,Section,Time')
+if 'Registered.csv' not in os.listdir('UserList'):
+    with open('UserList/Registered.csv', 'w') as f:
+        f.write('Name,ID,Section')
+if 'Unregistered.csv' not in os.listdir('UserList'):
+    with open('UserList/Unregistered.csv', 'w') as f:
+        f.write('Name,ID,Section')
 
 # Only for testing
 @app.route('/')
 def home():
-    return render_template('HomePage.html', date=datetoday2)
+    if g.user:
+        return render_template('HomePage.html', admin=True, mess='Logged in as Administrator', user=session['admin'])
+
+    return render_template('HomePage.html', admin=False, datetoday2=datetoday2)
+
+@app.route('/attendance')
+def take_attendance():
+    # your logic
+    return "Attendance Page"
+
+@app.route('/adduser')
+def add_user():
+    return "Add User Page"
+
+@app.route('/attendancelist')
+def attendance_list():
+    return "Attendance List Page"
+
+@app.route('/registeruserlist')
+def register_user_list():
+    return "Registered Users Page"
+
+@app.route('/unregisteruserlist')
+def unregister_user_list():
+    return "Unregistered Users Page"
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    if g.user:
+        session.pop('admin', None)
+        return redirect(url_for('home', admin=False))
+
     if request.method == 'POST':
-        # Handle login logic here
-        pass
+        if request.form['username'] == 'admin' and request.form['password'] == '12345':
+            session['admin'] = request.form['username']
+            return redirect(url_for('home', admin=True, mess='Logged in as Administrator'))
+        else:
+            return render_template('LogInFrom.html', mess='Incorrect Username or Password')
     return render_template('LogInForm.html')
+
+# ======== Flask Logout =========
+@app.route('/logout')
+def logout():
+    session.pop('admin', None)
+    return render_template('LogInFrom.html')
 
 # Main Function
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(port=5001, debug=True)
