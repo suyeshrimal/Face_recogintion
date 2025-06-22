@@ -16,7 +16,11 @@ app=Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY')
 
 # Flask error handler
-"""Code to be written"""
+@app.errorhandler(404)
+@app.errorhandler(401)
+@app.errorhandler(500)
+def http_error_handler(error):
+    return render_template('E rror.html')
 
 # Flask assign admin
 @app.before_request
