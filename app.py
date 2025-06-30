@@ -41,8 +41,6 @@ datetoday2 = date.today().strftime("%d %B %Y")
 face_detector = cv2.CascadeClassifier('static/haarcascade_frontalface_default.xml')
 cap = cv2.VideoCapture(0)
 
-
-
 # ======= Check and Make Folders ========
 if not os.path.isdir('Attendance'):
     os.makedirs('Attendance')
@@ -102,12 +100,16 @@ def extract_faces(img):
 cnn_model = load_model('static/face_recognition_model.h5')
 
 # Get class names (assuming each folder in 'static/faces' is a user/class)
-class_names = sorted(os.listdir('static/faces'))
+class_names = sorted([
+    d for d in os.listdir('static/faces')
+    if os.path.isdir(os.path.join('static/faces', d)) and not d.startswith('.')
+])
 
 # ======= Identify Face Using ML ========
 def identify_face(face_img):
     # face_img is expected to be a BGR image (from OpenCV)
-    
+    if face_img is None:
+        return "No face detected"
     # Resize to (224, 224) because your CNN expects this size
     face_img = cv2.resize(face_img, (224, 224))
     
@@ -126,11 +128,19 @@ def identify_face(face_img):
     # Get the index of highest probability
     pred_index = np.argmax(preds)
     
-    # Get the class name
-    predicted_class = class_names[pred_index]
+     # Debug info
+    print("Predictions:", preds)
+    print("Predicted index:", pred_index)
+    print("Class names:", class_names)
     
-    return predicted_class
-
+    # Get the class name
+    # predicted_class = class_names[pred_index]
+    
+    # return predicted_class
+    if 0 <= pred_index < len(class_names):
+        return class_names[pred_index]
+    else:
+        return "Unknown"
 
 # ======= Train Model Using Available Faces ========
 def train_model():
@@ -249,6 +259,12 @@ def add_attendance(name):
 
     remove_empty_cells()
     file_path = f'Attendance/{datetoday}.csv'
+    
+    # Check if file exists, else create with headers
+    if not os.path.exists(file_path):
+        df = pd.DataFrame(columns=['Name', 'ID', 'Section', 'Time'])
+        df.to_csv(file_path, index=False)
+        
     df = pd.read_csv(file_path)
 
     # Check if user has any attendance today
@@ -291,6 +307,7 @@ def take_attendance():
     return render_template('Attendance.html', names=names, rolls=rolls, sec=sec, times=times, l=l,
                            datetoday2=datetoday2)
     
+    
 @app.route('/attendancebtn', methods=['GET'])
 def attendancebtn():
     if len(os.listdir('static/faces')) == 0:
@@ -314,24 +331,29 @@ def attendancebtn():
         ret, frame = cap.read()
         faces = extract_faces(frame)  # Detect all faces
 
+        identified_person_name = "Unknown"
+        identified_person_id = "N/A"
+
         if faces is not None and len(faces) > 0:
             (x, y, w, h) = faces[0]  # Use first detected face
-
             cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 20), 2)
 
-            # Resize face to 224x224 (CNN input size)
+            # Resize and prepare the face
             face_img = cv2.resize(frame[y:y + h, x:x + w], (224, 224))
 
-            identified_person = identify_face(face_img)  # CNN function returns class name
+            identified_person = identify_face(face_img)
 
-            identified_person_name, identified_person_id, *_ = identified_person.split('$')
+            if identified_person is not None and '$' in identified_person:
+                identified_person_name, identified_person_id, *_ = identified_person.split('$')
 
-            if flag != identified_person:
-                j = 1
-                flag = identified_person
+                if flag != identified_person:
+                    j = 1
+                    flag = identified_person
 
-            if j % 20 == 0:
-                add_attendance(identified_person)
+                if j % 20 == 0:
+                    add_attendance(identified_person)
+            else:
+                identified_person = "Unknown"
 
             cv2.putText(frame, f'Name: {identified_person_name}', (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
                         (255, 0, 20), 2, cv2.LINE_AA)
@@ -345,8 +367,9 @@ def attendancebtn():
             j = 1
             flag = None
 
+        # Display the frame
         cv2.namedWindow('Attendance', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Attendance', 800, 600) 
+        cv2.resizeWindow('Attendance', 800, 600)
         cv2.setWindowProperty('Attendance', cv2.WND_PROP_TOPMOST, 1)
         cv2.imshow('Attendance', frame)
 
@@ -368,13 +391,13 @@ def add_user():
 def adduserbtn():
     newusername = request.form['newusername']
     newuserid = request.form['newuserid']
-    newusersection = request.form['newusersection']
+    # newusersection = request.form['newusersection']
 
     cap = cv2.VideoCapture(0)
     if cap is None or not cap.isOpened():
         return render_template('AddUser.html', mess='Camera not available.')
 
-    userimagefolder = f'static/faces/{newusername}${newuserid}${newusersection}'
+    userimagefolder = f'static/faces/{newusername}${newuserid}$None'
     if not os.path.isdir(userimagefolder):
         os.makedirs(userimagefolder)
 
@@ -390,7 +413,7 @@ def adduserbtn():
         return render_template('AddUser.html', mess='You are already a registered user.')
 
     with open('UserList/Unregistered.csv', 'a') as f:
-        f.write(f'\n{newusername},{newuserid},{newusersection}')
+        f.write(f'\n{newusername},{newuserid},None')
 
     images_captured = 0
     frame_count = 0
@@ -444,8 +467,15 @@ def adduserbtn():
 
     # Train model with new images
     train_model()
-    return render_template('AddUser.html',
-                           mess='Waiting for admin approval. Currently you are listed as Unregistered.')
+     # ✅ Re-read the updated list and pass it to the template
+    dfu = pd.read_csv('UserList/Unregistered.csv')
+    names = dfu['Name'].tolist()
+    rolls = dfu['ID'].astype(str).tolist()
+    sec = dfu['Section'].tolist()
+    l = len(dfu)
+
+    return render_template('UnregisterUserList.html', names=names, rolls=rolls, sec=sec, l=l,
+                           mess=f'Number of Unregistered Students: {l}')
 
 @app.route('/attendancelist')
 def attendance_list():
