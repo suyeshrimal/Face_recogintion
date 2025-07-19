@@ -26,6 +26,28 @@ app.secret_key = os.getenv('SECRET_KEY')
 def http_error_handler(error):
     return render_template('Error.html')
 
+
+def load_csv_safely(csv_path, expected_columns):
+    # If file doesn't exist, create with headers
+    if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
+        print(f"[Fix] File missing or empty: {csv_path}. Creating new with headers.")
+        with open(csv_path, 'w') as f:
+            f.write(','.join(expected_columns) + '\n')
+
+    try:
+        df = pd.read_csv(csv_path)
+        if list(df.columns) != expected_columns:
+            print(f"[Fix] File '{csv_path}' missing expected columns. Resetting.")
+            df = pd.DataFrame(columns=expected_columns)
+            df.to_csv(csv_path, index=False)
+    except Exception as e:
+        print(f"[Fix] Error reading {csv_path}: {e}. Resetting.")
+        df = pd.DataFrame(columns=expected_columns)
+        df.to_csv(csv_path, index=False)
+
+    return pd.read_csv(csv_path)
+
+    
 # Flask assign admin
 @app.before_request
 def before_request():
@@ -64,16 +86,18 @@ def remove_empty_cells():
         for file in ['UserList/Registered.csv', 'UserList/Unregistered.csv']:
             if os.path.isfile(file):
                 df = pd.read_csv(file)
-                df.dropna(inplace=True)
-                df.to_csv(file, index=False)
+                df.dropna(how='any', inplace=True)
+                df = df[df.apply(lambda row: all(str(cell).strip() != '' for cell in row), axis=1)]
+                df.to_csv(file, index=False, header=True)
 
         if os.path.isdir('Attendance'):
             for file in os.listdir('Attendance'):
                 file_path = f'Attendance/{file}'
                 try:
                     df = pd.read_csv(file_path)
-                    df.dropna(inplace=True)
-                    df.to_csv(file_path, index=False)
+                    df.dropna(how='any', inplace=True)
+                    df = df[df.apply(lambda row: all(str(cell).strip() != '' for cell in row), axis=1)]
+                    df.to_csv(file_path,index=False, header=True)
                 except pd.errors.EmptyDataError:
                     print(f"[Warning] Empty file skipped: {file_path}")
                 except Exception as e:
@@ -204,9 +228,9 @@ def train_model():
 
 # ======= Remove Attendance of Deleted User ======
 def remAttendance():
-    dfu = pd.read_csv('UserList/Unregistered.csv')
-    dfr = pd.read_csv('UserList/Registered.csv')
-
+    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
+    dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
+    
     valid_ids = set(map(str, dfu['ID'])) | set(map(str, dfr['ID']))
 
     for file in os.listdir('Attendance'):
@@ -219,15 +243,23 @@ def remAttendance():
         # Filter only rows where ID exists in either user list
         df_filtered = df[df['ID'].astype(str).isin(valid_ids)]
 
-        df_filtered.to_csv(file_path, index=False)
+        df_filtered.to_csv(file_path, index=False, header=True)
 
     remove_empty_cells()
 
 
 # ======== Get Info From Attendance File =========
 def extract_attendance():
-    dfu = pd.read_csv('UserList/Unregistered.csv')
-    dfr = pd.read_csv('UserList/Registered.csv')
+    datetoday = date.today().strftime("%Y-%m-%d")
+    attendance_path = f'Attendance/{datetoday}.csv'
+
+    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
+    dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
+
+    # Check if today's attendance file exists and is not empty
+    if not os.path.exists(attendance_path) or os.path.getsize(attendance_path) == 0:
+        return [], [], [], [], datetoday, [], 0
+    
     df = pd.read_csv(f'Attendance/{datetoday}.csv')
 
     names = df['Name']
@@ -263,7 +295,7 @@ def add_attendance(name):
     # Check if file exists, else create with headers
     if not os.path.exists(file_path):
         df = pd.DataFrame(columns=['Name', 'ID', 'Section', 'Time'])
-        df.to_csv(file_path, index=False)
+        df.to_csv(file_path, index=False, header=True)
         
     df = pd.read_csv(file_path)
 
@@ -391,19 +423,22 @@ def add_user():
 def adduserbtn():
     newusername = request.form['newusername']
     newuserid = request.form['newuserid']
-    # newusersection = request.form['newusersection']
+    newusersection = request.form['newusersection']
 
     cap = cv2.VideoCapture(0)
     if cap is None or not cap.isOpened():
         return render_template('AddUser.html', mess='Camera not available.')
 
-    userimagefolder = f'static/faces/{newusername}${newuserid}$None'
+    userimagefolder = f'static/faces/{newusername}${newuserid}${newusersection}'
     if not os.path.isdir(userimagefolder):
         os.makedirs(userimagefolder)
 
     remove_empty_cells()
-    dfu = pd.read_csv('UserList/Unregistered.csv')
-    dfr = pd.read_csv('UserList/Registered.csv')
+    csv_unreg_path = os.path.join(app.root_path, 'UserList', 'Unregistered.csv')
+    csv_reg_path = os.path.join(app.root_path, 'UserList', 'Registered.csv')
+
+    dfu = load_csv_safely(csv_unreg_path, ['Name', 'ID', 'Section'])
+    dfr = load_csv_safely(csv_reg_path, ['Name', 'ID', 'Section'])
 
     if str(newuserid) in list(map(str, dfu['ID'])):
         cap.release()
@@ -412,12 +447,9 @@ def adduserbtn():
         cap.release()
         return render_template('AddUser.html', mess='You are already a registered user.')
 
-    with open('UserList/Unregistered.csv', 'a') as f:
-        f.write(f'\n{newusername},{newuserid},None')
-
     images_captured = 0
     frame_count = 0
-    max_frames = 1000  # To avoid infinite loop if faces not detected enough
+    max_frames = 1000
     skip_count = 0
 
     while images_captured < 50 and frame_count < max_frames:
@@ -426,9 +458,8 @@ def adduserbtn():
             break
 
         faces = extract_faces(frame)
-        if faces is None or len(faces) == 0:  # No faces detected in this frame
+        if faces is None or len(faces) == 0:
             skip_count += 1
-            # Optional: show message on frame or just continue
             cv2.putText(frame, f'No face detected. Please face the camera.', (30, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         else:
@@ -436,7 +467,6 @@ def adduserbtn():
             for (x, y, w, h) in faces:
                 cv2.putText(frame, f'Images Captured: {images_captured}/50', (30, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 20), 2)
-                # Save image every 10 frames to avoid similar images
                 if frame_count % 10 == 0:
                     img_name = f'{newusername}_{images_captured}.jpg'
                     cv2.imwrite(os.path.join(userimagefolder, img_name), frame[y:y + h, x:x + w])
@@ -446,7 +476,7 @@ def adduserbtn():
         cv2.setWindowProperty('Collecting Face Data', cv2.WND_PROP_TOPMOST, 1)
         cv2.imshow('Collecting Face Data', frame)
 
-        if cv2.waitKey(1) == 27:  # ESC key to cancel
+        if cv2.waitKey(1) == 27:
             break
 
         frame_count += 1
@@ -454,21 +484,25 @@ def adduserbtn():
     cap.release()
     cv2.destroyAllWindows()
 
-    # If no images captured, remove user from unregistered list and delete folder
     if images_captured == 0:
-        dfu = pd.read_csv('UserList/Unregistered.csv')
-        dfu = dfu[dfu['ID'] != newuserid]  # Remove user row
-        dfu.to_csv('UserList/Unregistered.csv', index=False)
-
+        dfu = load_csv_safely(csv_unreg_path, ['Name', 'ID', 'Section'])
+        dfu = dfu[dfu['ID'] != newuserid]
+        dfu.to_csv(csv_unreg_path, index=False, header=True)
         remove_empty_cells()
-
         shutil.rmtree(userimagefolder)
         return render_template('AddUser.html', mess='Failed to capture photos.')
 
-    # Train model with new images
+    if not os.path.exists(csv_unreg_path) or os.path.getsize(csv_unreg_path) == 0:
+        with open(csv_unreg_path, 'w') as f:
+            f.write('Name,ID,Section\n')
+
+    with open(csv_unreg_path, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([newusername, newuserid, newusersection])
+
     train_model()
-     # ✅ Re-read the updated list and pass it to the template
-    dfu = pd.read_csv('UserList/Unregistered.csv')
+
+    dfu = load_csv_safely(csv_unreg_path, ['Name', 'ID', 'Section'])
     names = dfu['Name'].tolist()
     rolls = dfu['ID'].astype(str).tolist()
     sec = dfu['Section'].tolist()
@@ -476,6 +510,7 @@ def adduserbtn():
 
     return render_template('UnregisterUserList.html', names=names, rolls=rolls, sec=sec, l=l,
                            mess=f'Number of Unregistered Students: {l}')
+
 
 @app.route('/attendancelist')
 def attendance_list():
@@ -516,8 +551,8 @@ def attendancelistdate():
 
         skip_header = True
         csv_file = csv.reader(open(f'Attendance/{day}-{month}-{year}.csv', "r"), delimiter=",")
-        dfu = pd.read_csv('UserList/Unregistered.csv')
-        dfr = pd.read_csv('UserList/Registered.csv')
+        dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
+        dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
 
         for row in csv_file:
             if skip_header:
@@ -565,9 +600,9 @@ def attendancelistid():
     reg = []
     l = 0
 
-    dfu = pd.read_csv('UserList/Unregistered.csv')
-    dfr = pd.read_csv('UserList/Registered.csv')
-
+    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
+    dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
+    
     for file in os.listdir('Attendance'):
         csv_file = csv.reader(open('Attendance/' + file, "r"), delimiter=",")
 
@@ -617,9 +652,13 @@ def register_user_list():
             skip_header = False
             continue
 
-        names.append(row[0])
-        rolls.append(row[1])
-        sec.append(row[2])
+        if len(row) != 3:
+            print(f"[Warning] Skipping malformed row: {row}")
+            continue
+
+        names.append(row[0].strip())
+        rolls.append(row[1].strip())
+        sec.append(row[2].strip())
         l += 1
 
     if l != 0:
@@ -635,18 +674,20 @@ def unregisteruser():
     if not g.user:
         return render_template('LogInForm.html')
 
+    remove_empty_cells()
     try:
         idx = int(request.form['index'])
     except (ValueError, KeyError):
-        return "Invalid index", 400
+        return "Invalid index (not a number or missing)", 400
 
     remove_empty_cells()
-    dfr = pd.read_csv('UserList/Registered.csv')
-    dfu = pd.read_csv('UserList/Unregistered.csv')
+    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
+    dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
+    
 
     if idx < 0 or idx >= len(dfr):
-        return "Index out of range", 400
-
+        return f"Invalid index: {idx} for {len(dfr)} users", 400
+    
     # Extract the row to unregister
     row = dfr.iloc[idx].copy()
 
@@ -664,16 +705,17 @@ def unregisteruser():
 
     # Add to unregistered DataFrame
     dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
-    dfu.to_csv('UserList/Unregistered.csv', index=False)
+    dfu.to_csv('UserList/Unregistered.csv', index=False, header=True)
 
     # Remove from registered DataFrame
     dfr = dfr.drop(dfr.index[idx])
-    dfr.to_csv('UserList/Registered.csv', index=False)
+    dfr.to_csv('UserList/Registered.csv', index=False, header=True)
 
     train_model()
     remove_empty_cells()
 
     # Use updated DataFrame to get user info to pass to template
+    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
     names = dfr['Name'].tolist()
     rolls = dfr['ID'].astype(str).tolist()
     sec = dfr['Section'].tolist()
@@ -702,7 +744,7 @@ def deleteregistereduser():
         train_model()
 
     dfr.drop(dfr.index[idx], inplace=True)
-    dfr.to_csv('UserList/Registered.csv', index=False)
+    dfr.to_csv('UserList/Registered.csv', index=False, header=True)
 
     remove_empty_cells()
 
@@ -739,12 +781,7 @@ def unregister_user_list():
 
     remove_empty_cells()
 
-    try:
-        df = pd.read_csv('UserList/Unregistered.csv')
-    except FileNotFoundError:
-        # If file doesn't exist or is empty
-        return render_template('UnregisterUserList.html', names=[], rolls=[], sec=[], l=0,
-                               mess="Database is empty!")
+    df = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
 
     if df.empty:
         return render_template('UnregisterUserList.html', names=[], rolls=[], sec=[], l=0,
@@ -771,8 +808,8 @@ def registeruser():
     remove_empty_cells()
 
     # Read CSVs into dataframes
-    dfu = pd.read_csv('UserList/Unregistered.csv')
-    dfr = pd.read_csv('UserList/Registered.csv')
+    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
+    dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
 
     if idx >= len(dfu):
         return render_template('UnregisterUserList.html', names=[], rolls=[], sec=[], l=0, mess="Invalid user index.")
@@ -791,11 +828,11 @@ def registeruser():
     # Update section and append to registered
     row['Section'] = new_section
     dfr = pd.concat([dfr, pd.DataFrame([row])], ignore_index=True)
-    dfr.to_csv('UserList/Registered.csv', index=False)
+    dfr.to_csv('UserList/Registered.csv', index=False, header=True)
 
     # Remove from unregistered
     dfu = dfu.drop(index=idx)
-    dfu.to_csv('UserList/Unregistered.csv', index=False)
+    dfu.to_csv('UserList/Unregistered.csv', index=False, header=True)
 
     # Retrain model
     train_model()
@@ -876,7 +913,7 @@ def login():
             session['admin'] = request.form['username']
             return redirect(url_for('home', admin=True, mess='Logged in as Administrator'))
         else:
-            return render_template('LogInFrom.html', mess='Incorrect Username or Password')
+            return render_template('LogInForm.html', mess='Incorrect Username or Password')
     return render_template('LogInForm.html')
 
 # ======== Flask Logout =========

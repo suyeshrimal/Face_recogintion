@@ -75,6 +75,7 @@
                 Add New User</h2>
             <form action='/adduserbtn' method="POST" enctype="multipart/form-data" style="max-width: 80%; margin: auto;">
                 <br>
+                
                 <input type="text" id="newusername" name='newusername' placeholder="Username"
                        style="width: 70%; font-size: 16px; margin: 8px 0 10px 0; border: 1px solid #797475; border-radius: 12px; padding: 12px 16px 12px 16px;"
                        required>
@@ -82,8 +83,9 @@
                 <input type="text" id="newusereid" name='newuserid' placeholder="User ID"
                        style="width: 70%; font-size: 16px; margin: 8px 0 10px 0; border: 1px solid #797475; border-radius: 12px; padding: 12px 16px 12px 16px;"
                        required>
-                <input type="hidden" id="newusersection" name='newusersection' value="None"
-                       required>
+                <input type="text" id="newusersection" name='newusersection' placeholder="Section"
+       style="width: 70%; font-size: 16px; margin: 8px 0 10px 0; border: 1px solid #797475; border-radius: 12px; padding: 12px 16px 12px 16px;"
+       required>
                 <br>
                 <button style="letter-spacing: 4px; background-color: #336699 !important; width: 70%; margin-top: 20px; font-size: 22px; padding: 10px; border-radius: 12px; border: 0px;"
                         type='submit' class='btn btn-dark'>Submit
