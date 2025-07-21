@@ -28,7 +28,7 @@ def http_error_handler(error):
 
 
 def load_csv_safely(csv_path, expected_columns):
-    # If file doesn't exist, create with headers
+    # If file doesn't exist or empty, create with headers
     if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
         print(f"[Fix] File missing or empty: {csv_path}. Creating new with headers.")
         with open(csv_path, 'w') as f:
@@ -36,7 +36,8 @@ def load_csv_safely(csv_path, expected_columns):
 
     try:
         df = pd.read_csv(csv_path)
-        if list(df.columns) != expected_columns:
+        # Check if expected columns are all present (order can differ)
+        if not set(expected_columns).issubset(df.columns):
             print(f"[Fix] File '{csv_path}' missing expected columns. Resetting.")
             df = pd.DataFrame(columns=expected_columns)
             df.to_csv(csv_path, index=False)
@@ -45,7 +46,7 @@ def load_csv_safely(csv_path, expected_columns):
         df = pd.DataFrame(columns=expected_columns)
         df.to_csv(csv_path, index=False)
 
-    return pd.read_csv(csv_path)
+    return df
 
     
 # Flask assign admin
@@ -288,32 +289,41 @@ def extract_attendance():
 def add_attendance(name):
     username, userid, usersection = name.split('$')
     current_time = datetime.now().strftime("%I:%M %p")
-
-    remove_empty_cells()
+    
     file_path = f'Attendance/{datetoday}.csv'
     
-    # Check if file exists, else create with headers
-    if not os.path.exists(file_path):
+    # If file doesn't exist or is empty, create with headers
+    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
         df = pd.DataFrame(columns=['Name', 'ID', 'Section', 'Time'])
-        df.to_csv(file_path, index=False, header=True)
-        
-    df = pd.read_csv(file_path)
-
-    # Check if user has any attendance today
+        df.to_csv(file_path, index=False)
+    
+    # Now safely read the file
+    try:
+        df = pd.read_csv(file_path)
+    except pd.errors.EmptyDataError:
+        # In case file became empty meanwhile, recreate and read again
+        df = pd.DataFrame(columns=['Name', 'ID', 'Section', 'Time'])
+        df.to_csv(file_path, index=False)
+        df = pd.read_csv(file_path)
+    
     user_rows = df[df['ID'].astype(str) == str(userid)]
-
+    
     if user_rows.empty:
         new_entry = pd.DataFrame([[username, userid, usersection, current_time]],
                                  columns=['Name', 'ID', 'Section', 'Time'])
         new_entry.to_csv(file_path, mode='a', index=False, header=False)
     else:
-        # Check time difference
-        last_time = user_rows.iloc[-1]['Time']
-        start_time = datetime.strptime(last_time, "%I:%M %p")
-        end_time = datetime.strptime(current_time, "%I:%M %p")
-        delta = (end_time - start_time).total_seconds() / 60
-
-        if delta > 40:
+        try:
+            last_time = user_rows.iloc[-1]['Time']
+            start_time = datetime.strptime(last_time, "%I:%M %p")
+            end_time = datetime.strptime(current_time, "%I:%M %p")
+            delta = (end_time - start_time).total_seconds() / 60
+            if delta > 40:
+                new_entry = pd.DataFrame([[username, userid, usersection, current_time]],
+                                         columns=['Name', 'ID', 'Section', 'Time'])
+                new_entry.to_csv(file_path, mode='a', index=False, header=False)
+        except Exception as e:
+            print(f"Time parsing error, adding attendance anyway: {e}")
             new_entry = pd.DataFrame([[username, userid, usersection, current_time]],
                                      columns=['Name', 'ID', 'Section', 'Time'])
             new_entry.to_csv(file_path, mode='a', index=False, header=False)
@@ -590,46 +600,55 @@ def attendancelistid():
     if not g.user:
         return render_template('LogInForm.html')
 
-    id = request.form['id']
+    id = request.form.get('id')
+    if not id:
+        return render_template('AttendanceList.html', mess="No ID provided!")
 
-    names = []
-    rolls = []
-    sec = []
-    times = []
-    dates = []
-    reg = []
-    l = 0
+    names, rolls, sec, times, dates, reg = [], [], [], [], [], []
+    count = 0
 
     dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
     dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
     
-    for file in os.listdir('Attendance'):
-        csv_file = csv.reader(open('Attendance/' + file, "r"), delimiter=",")
+    attendance_dir = 'Attendance'
+    if not os.path.exists(attendance_dir):
+        return render_template('AttendanceList.html', mess="Attendance directory not found!")
 
-        for row in csv_file:
-            if row[1] == id:
-                names.append(row[0])
-                rolls.append(row[1])
-                sec.append(row[2])
-                times.append(row[3])
-                dates.append(file.replace('.csv', ''))
+    for filename in os.listdir(attendance_dir):
+        filepath = os.path.join(attendance_dir, filename)
+        if os.path.isfile(filepath) and filename.endswith('.csv'):
+            try:
+                with open(filepath, "r") as f:
+                    csv_file = csv.reader(f, delimiter=",")
+                    for row in csv_file:
+                        if len(row) > 3 and row[1] == id:  # Check row length to avoid index error
+                            names.append(row[0])
+                            rolls.append(row[1])
+                            sec.append(row[2])
+                            times.append(row[3])
+                            dates.append(filename.replace('.csv', ''))
 
-                if str(row[1]) in list(map(str, dfu['ID'])):
-                    reg.append("Unregistered")
-                elif str(row[1]) in list(map(str, dfr['ID'])):
-                    reg.append("Registered")
-                else:
-                    reg.append("x")
+                            if str(row[1]) in list(map(str, dfu['ID'])):
+                                reg.append("Unregistered")
+                            elif str(row[1]) in list(map(str, dfr['ID'])):
+                                reg.append("Registered")
+                            else:
+                                reg.append("Unknown")
+                            count += 1
+            except Exception as e:
+                print(f"[Warning] Skipping file {filename} due to error: {e}")
 
-                l += 1
-
-    if l != 0:
-        return render_template('AttendanceList.html', names=names, rolls=rolls, sec=sec, times=times, dates=dates,
-                               reg=reg, l=l,
-                               mess=f'Total Attendance: {l}')
+    if count > 0:
+        return render_template('AttendanceList.html',
+                               names=names, rolls=rolls, sec=sec,
+                               times=times, dates=dates, reg=reg,
+                               l=count,
+                               mess=f'Total Attendance: {count}')
     else:
-        return render_template('AttendanceList.html', names=names, rolls=rolls, sec=sec, times=times, dates=dates,
-                               reg=reg, l=l,
+        return render_template('AttendanceList.html',
+                               names=[], rolls=[], sec=[],
+                               times=[], dates=[], reg=[],
+                               l=0,
                                mess="Nothing Found!")
 
 

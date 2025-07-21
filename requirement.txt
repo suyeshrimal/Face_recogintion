@@ -1,9 +1,10 @@
 opencv-python
 Flask
 numpy
-scikit-learn
+scikit-learn==1.7.1
 pandas
 joblib
 tensorflow
 Pillow
 python-dotenv
+matplotlib
