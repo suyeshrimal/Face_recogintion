@@ -62,6 +62,7 @@ datetoday2 = date.today().strftime("%d %B %Y")
 
 # Capture the video
 face_detector = cv2.CascadeClassifier('static/haarcascade_frontalface_default.xml')
+eye_detector = cv2.CascadeClassifier('static/haarcascade_eye.xml')
 cap = cv2.VideoCapture(0)
 
 # ======= Check and Make Folders ========
@@ -113,16 +114,28 @@ def totalreg():
 
 
 # ======= Get Face From Image =========
-def extract_faces(img):
+def extract_faces_and_eyes(img):
     if img is None:
-        return ()
+        return (), ()
+
     gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Detect faces
     face_points = face_detector.detectMultiScale(gray_img, scaleFactor=1.5, minNeighbors=7)
-    return face_points
+
+    eyes_list = []  # List of eyes per face
+    for (x, y, w, h) in face_points:
+        roi_gray = gray_img[y:y+h, x:x+w]
+        eyes = eye_detector.detectMultiScale(roi_gray, scaleFactor=1.1, minNeighbors=5)
+        # Append eyes relative to the original image
+        eyes_global = [(ex+x, ey+y, ew, eh) for (ex, ey, ew, eh) in eyes]
+        eyes_list.append(eyes_global)
+
+    return face_points, eyes_list
 
 
 # Load the CNN model globally once
-cnn_model = load_model('static/face_recognition_model.h5')
+cnn_model = load_model('final_model/face_recognition_model.h5')
 
 # Get class names (assuming each folder in 'static/faces' is a user/class)
 class_names = sorted([
@@ -132,100 +145,160 @@ class_names = sorted([
 
 # ======= Identify Face Using ML ========
 def identify_face(face_img):
-    # face_img is expected to be a BGR image (from OpenCV)
+    global cnn_model, class_names
     if face_img is None:
         return "No face detected"
-    # Resize to (224, 224) because your CNN expects this size
+    
+    # Resize & preprocess
     face_img = cv2.resize(face_img, (224, 224))
-    
-    # Convert BGR to RGB because Keras models usually expect RGB
     face_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-    
-    # Normalize pixels to [0,1]
     face_img = face_img.astype('float32') / 255.0
-    
-    # Expand dims to shape (1, 224, 224, 3)
     face_img = np.expand_dims(face_img, axis=0)
     
-    # Predict class probabilities
+    # Predict
     preds = cnn_model.predict(face_img)
-    
-    # Get the index of highest probability
     pred_index = np.argmax(preds)
     
-     # Debug info
-    print("Predictions:", preds)
-    print("Predicted index:", pred_index)
-    print("Class names:", class_names)
-    
-    # Get the class name
-    # predicted_class = class_names[pred_index]
-    
-    # return predicted_class
-    if 0 <= pred_index < len(class_names):
-        return class_names[pred_index]
-    else:
-        return "Unknown"
+    # Return class name
+    return class_names.get(pred_index, "Unknown")
+
+
 
 # ======= Train Model Using Available Faces ========
+from tensorflow.keras.models import load_model
+import pickle
+
+# Global variables
+model = None
+class_names = None
+
 def train_model():
+    global cnn_model, class_names
+    
     face_dir = 'static/faces'
-    if len(os.listdir(face_dir)) == 0:
+    if not os.path.exists(face_dir) or len(os.listdir(face_dir)) == 0:
+        print("No faces to train on.")
         return
-
-    # Remove old CNN model if exists
-    if 'face_recognition_model.h5' in os.listdir('static'):
-        os.remove('static/face_recognition_model.h5')
-
-    # Data generator for training
+    
+    # Remove old model if exists
+    if os.path.exists('final_model/face_recognition_model.h5'):
+        os.remove('final_model/face_recognition_model.h5')
+    
     datagen = ImageDataGenerator(
-        rescale=1/255.,
-        validation_split=0.2  # Split training and validation
+        rescale=1./255,
+        rotation_range=20,
+        width_shift_range=0.2,
+        height_shift_range=0.2,
+        shear_range=0.2,
+        zoom_range=0.2,
+        horizontal_flip=True,
+        validation_split=0.1
     )
-
+    
+    # Generators
     train_data = datagen.flow_from_directory(
         face_dir,
-        target_size=(224, 224),
+        target_size=(224,224),
         batch_size=32,
         class_mode='categorical',
-        subset='training'
+        subset='training',
+        shuffle=True
     )
-
     val_data = datagen.flow_from_directory(
         face_dir,
-        target_size=(224, 224),
+        target_size=(224,224),
         batch_size=32,
         class_mode='categorical',
-        subset='validation'
+        subset='validation',
+        shuffle=True
     )
-
-    # Simple CNN model
-    model = tf.keras.models.Sequential([
-        tf.keras.layers.Conv2D(10, kernel_size=3, activation="relu", input_shape=(224,224,3)),
-        tf.keras.layers.MaxPool2D(pool_size=2),
-        tf.keras.layers.Conv2D(10, kernel_size=2, activation="relu"),
-        tf.keras.layers.MaxPool2D(pool_size=2),
-        tf.keras.layers.Conv2D(10, kernel_size=2, activation="relu"),
-        tf.keras.layers.MaxPool2D(pool_size=2),
+    
+    # Build model
+    cnn_model = tf.keras.models.Sequential([
+        tf.keras.layers.Conv2D(32, 3, activation="relu", input_shape=(224,224,3)),
+        tf.keras.layers.MaxPooling2D(2),
+        tf.keras.layers.Conv2D(64, 3, activation="relu"),
+        tf.keras.layers.MaxPooling2D(2),
+        tf.keras.layers.Conv2D(128, 3, activation="relu"),
+        tf.keras.layers.MaxPooling2D(2),
         tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(128, activation='relu'),
-        tf.keras.layers.Dense(train_data.num_classes, activation='softmax')
+        tf.keras.layers.Dense(128, activation="relu"),
+        tf.keras.layers.Dropout(0.5),
+        tf.keras.layers.Dense(train_data.num_classes, activation="softmax")
     ])
-
-    model.compile(
+    
+    cnn_model.compile(
         loss="categorical_crossentropy",
-        optimizer=tf.keras.optimizers.Adam(),
+        optimizer=tf.keras.optimizers.Adam(0.001),
         metrics=["accuracy"]
     )
-
-    model.fit(
+    
+    # Train
+    cnn_model.fit(
         train_data,
-        epochs=5,
-        validation_data=val_data
+        steps_per_epoch=len(train_data),
+        validation_data=val_data,
+        validation_steps=len(val_data),
+        epochs=7
     )
+    
+    # Save model & labels
+    os.makedirs('final_model', exist_ok=True)
+    cnn_model.save('final_model/face_recognition_model.h5')
+    
+    # Save class labels (index -> class name)
+    class_names = {v: k for k, v in train_data.class_indices.items()}
+    with open('final_model/class_names.pkl', 'wb') as f:
+        pickle.dump(class_names, f)
+    
+    # Reload into memory (ensures immediate recognition)
+    cnn_model = load_model('final_model/face_recognition_model.h5')
+    with open('final_model/class_names.pkl', 'rb') as f:
+        class_names = pickle.load(f)
+    
+    print("✅ Model trained and reloaded successfully!")
 
-    # Save the model
-    model.save('static/face_recognition_model.h5')
+
+
+cnn_model = None
+class_names = []
+
+def load_cnn_model():
+    global cnn_model, class_names
+
+    model_path = 'final_model/face_recognition_model.h5'
+    class_names_path = 'final_model/class_names.pkl'
+
+    # Load CNN model
+    if os.path.exists(model_path):
+        cnn_model = load_model(model_path)
+        print(f"[INFO] Loaded CNN model from {model_path}")
+    else:
+        print(f"[WARNING] CNN model not found at {model_path}.")
+        cnn_model = None
+
+    # Load or regenerate class_names.pkl
+    if os.path.exists(class_names_path):
+        with open(class_names_path, 'rb') as f:
+            class_names = pickle.load(f)
+        print(f"[INFO] Loaded class_names from {class_names_path}")
+    else:
+        print(f"[WARNING] class_names.pkl not found. Regenerating from Registered.csv...")
+        csv_path = 'UserList/Registered.csv'
+        if os.path.exists(csv_path):
+            df = pd.read_csv(csv_path)
+            class_names = {i: name for i, name in enumerate(df['Name'].tolist())}
+
+            # Ensure final_model directory exists
+            os.makedirs(os.path.dirname(class_names_path), exist_ok=True)
+
+            # Save class_names.pkl
+            with open(class_names_path, 'wb') as f:
+                pickle.dump(class_names, f)
+            print(f"[INFO] class_names.pkl created with {len(class_names)} entries.")
+        else:
+            print(f"[ERROR] Registered.csv not found. Cannot create class_names.pkl.")
+            class_names = {}
 
 # ======= Remove Attendance of Deleted User ======
 def remAttendance():
@@ -356,7 +429,7 @@ def attendancebtn():
         return render_template('Attendance.html', datetoday2=datetoday2,
                                mess='Database is empty! Register yourself first.')
 
-    if 'face_recognition_model.h5' not in os.listdir('static'):
+    if 'face_recognition_model.h5' not in os.listdir('final_model'):
         train_model()
 
     cap = cv2.VideoCapture(0)
@@ -371,51 +444,55 @@ def attendancebtn():
 
     while ret:
         ret, frame = cap.read()
-        faces = extract_faces(frame)  # Detect all faces
+        faces, eyes_list = extract_faces_and_eyes(frame)  # Detect faces and eyes
 
         identified_person_name = "Unknown"
         identified_person_id = "N/A"
 
         if faces is not None and len(faces) > 0:
-            (x, y, w, h) = faces[0]  # Use first detected face
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 20), 2)
+            for i, (x, y, w, h) in enumerate(faces):
+                # Only consider faces that have at least one detected eye
+                if i < len(eyes_list) and len(eyes_list[i]) > 0:
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 20), 2)
 
-            # Resize and prepare the face
-            face_img = cv2.resize(frame[y:y + h, x:x + w], (224, 224))
+                    # Draw rectangles around eyes
+                    for (ex, ey, ew, eh) in eyes_list[i]:
+                        cv2.rectangle(frame, (ex, ey), (ex + ew, ey + eh), (0, 255, 0), 2)
 
-            identified_person = identify_face(face_img)
+                    face_img = cv2.resize(frame[y:y + h, x:x + w], (224, 224))
+                    identified_person = identify_face(face_img)
 
-            if identified_person is not None and '$' in identified_person:
-                identified_person_name, identified_person_id, *_ = identified_person.split('$')
+                    if identified_person is not None and '$' in identified_person:
+                        identified_person_name, identified_person_id, *_ = identified_person.split('$')
 
-                if flag != identified_person:
-                    j = 1
-                    flag = identified_person
+                        if flag != identified_person:
+                            j = 1
+                            flag = identified_person
 
-                if j % 20 == 0:
-                    add_attendance(identified_person)
-            else:
-                identified_person = "Unknown"
+                        if j % 20 == 0:
+                            add_attendance(identified_person)
+                    else:
+                        identified_person_name = "Unknown"
+                        identified_person_id = "N/A"
 
-            cv2.putText(frame, f'Name: {identified_person_name}', (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
-                        (255, 0, 20), 2, cv2.LINE_AA)
-            cv2.putText(frame, f'ID: {identified_person_id}', (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1,
-                        (255, 0, 20), 2, cv2.LINE_AA)
-            cv2.putText(frame, 'Press Esc to close', (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 1,
-                        (0, 127, 255), 2, cv2.LINE_AA)
+                    cv2.putText(frame, f'Name: {identified_person_name}', (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                                (255, 0, 20), 2, cv2.LINE_AA)
+                    cv2.putText(frame, f'ID: {identified_person_id}', (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                                (255, 0, 20), 2, cv2.LINE_AA)
+                    cv2.putText(frame, 'Press Esc to close', (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                                (0, 127, 255), 2, cv2.LINE_AA)
 
-            j += 1
+                    j += 1
         else:
             j = 1
             flag = None
 
-        # Display the frame
         cv2.namedWindow('Attendance', cv2.WINDOW_NORMAL)
         cv2.resizeWindow('Attendance', 800, 600)
         cv2.setWindowProperty('Attendance', cv2.WND_PROP_TOPMOST, 1)
         cv2.imshow('Attendance', frame)
 
-        if cv2.waitKey(1) == 27:  # ESC key to exit
+        if cv2.waitKey(1) == 27:  # ESC key
             break
 
     cap.release()
@@ -424,6 +501,7 @@ def attendancebtn():
     names, rolls, sec, times, dates, reg, l = extract_attendance()
     return render_template('Attendance.html', names=names, rolls=rolls, sec=sec, times=times, l=l,
                            datetoday2=datetoday2)
+
 
 @app.route('/adduser')
 def add_user():
@@ -434,90 +512,77 @@ def adduserbtn():
     newusername = request.form['newusername']
     newuserid = request.form['newuserid']
     newusersection = request.form['newusersection']
-
+    
     cap = cv2.VideoCapture(0)
-    if cap is None or not cap.isOpened():
+    if not cap.isOpened():
         return render_template('AddUser.html', mess='Camera not available.')
-
+    
     userimagefolder = f'static/faces/{newusername}${newuserid}${newusersection}'
-    if not os.path.isdir(userimagefolder):
-        os.makedirs(userimagefolder)
-
-    remove_empty_cells()
+    os.makedirs(userimagefolder, exist_ok=True)
+    
+    # CSV paths
     csv_unreg_path = os.path.join(app.root_path, 'UserList', 'Unregistered.csv')
     csv_reg_path = os.path.join(app.root_path, 'UserList', 'Registered.csv')
-
+    
     dfu = load_csv_safely(csv_unreg_path, ['Name', 'ID', 'Section'])
     dfr = load_csv_safely(csv_reg_path, ['Name', 'ID', 'Section'])
-
-    if str(newuserid) in list(map(str, dfu['ID'])):
+    
+    # Check duplicates
+    if str(newuserid) in map(str, dfu['ID']) or str(newuserid) in map(str, dfr['ID']):
         cap.release()
-        return render_template('AddUser.html', mess='You are already in unregistered list.')
-    if str(newuserid) in list(map(str, dfr['ID'])):
-        cap.release()
-        return render_template('AddUser.html', mess='You are already a registered user.')
-
+        return render_template('AddUser.html', mess='User already exists.')
+    
+    # Capture face images
     images_captured = 0
     frame_count = 0
     max_frames = 1000
-    skip_count = 0
-
     while images_captured < 50 and frame_count < max_frames:
         ret, frame = cap.read()
         if not ret:
             break
-
-        faces = extract_faces(frame)
-        if faces is None or len(faces) == 0:
-            skip_count += 1
-            cv2.putText(frame, f'No face detected. Please face the camera.', (30, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        else:
-            skip_count = 0
-            for (x, y, w, h) in faces:
-                cv2.putText(frame, f'Images Captured: {images_captured}/50', (30, 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 20), 2)
-                if frame_count % 10 == 0:
-                    img_name = f'{newusername}_{images_captured}.jpg'
-                    cv2.imwrite(os.path.join(userimagefolder, img_name), frame[y:y + h, x:x + w])
-                    images_captured += 1
-
-        cv2.namedWindow('Collecting Face Data', cv2.WINDOW_NORMAL)
-        cv2.setWindowProperty('Collecting Face Data', cv2.WND_PROP_TOPMOST, 1)
+        
+        faces, eyes_list = extract_faces_and_eyes(frame)
+        if faces is not None:
+            for i, (x, y, w, h) in enumerate(faces):
+                if i < len(eyes_list) and len(eyes_list[i]) > 0:
+                    face_img = cv2.resize(frame[y:y+h, x:x+w], (224,224))
+                    if frame_count % 10 == 0:
+                        cv2.imwrite(os.path.join(userimagefolder, f'{newusername}_{images_captured}.jpg'), face_img)
+                        images_captured += 1
+                    # Draw rectangles
+                    cv2.rectangle(frame, (x,y), (x+w, y+h), (255,0,20), 2)
+                    for (ex, ey, ew, eh) in eyes_list[i]:
+                        cv2.rectangle(frame, (ex,ey), (ex+ew, ey+eh), (0,255,0), 2)
+                    cv2.putText(frame, f'Images Captured: {images_captured}/50', (30,60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,20), 2)
+        
         cv2.imshow('Collecting Face Data', frame)
-
         if cv2.waitKey(1) == 27:
             break
-
         frame_count += 1
-
+    
     cap.release()
     cv2.destroyAllWindows()
-
+    
     if images_captured == 0:
-        dfu = load_csv_safely(csv_unreg_path, ['Name', 'ID', 'Section'])
-        dfu = dfu[dfu['ID'] != newuserid]
-        dfu.to_csv(csv_unreg_path, index=False, header=True)
-        remove_empty_cells()
         shutil.rmtree(userimagefolder)
-        return render_template('AddUser.html', mess='Failed to capture photos.')
-
-    if not os.path.exists(csv_unreg_path) or os.path.getsize(csv_unreg_path) == 0:
-        with open(csv_unreg_path, 'w') as f:
-            f.write('Name,ID,Section\n')
-
+        return render_template('AddUser.html', mess='Failed to capture valid face images.')
+    
+    # Append to Unregistered.csv
     with open(csv_unreg_path, 'a', newline='') as f:
         writer = csv.writer(f)
         writer.writerow([newusername, newuserid, newusersection])
-
+    
+    # Retrain model immediately with new user included
     train_model()
-
+    
+    # Reload unregistered users list
     dfu = load_csv_safely(csv_unreg_path, ['Name', 'ID', 'Section'])
     names = dfu['Name'].tolist()
     rolls = dfu['ID'].astype(str).tolist()
     sec = dfu['Section'].tolist()
     l = len(dfu)
-
+    
     return render_template('UnregisterUserList.html', names=names, rolls=rolls, sec=sec, l=l,
                            mess=f'Number of Unregistered Students: {l}')
 
@@ -855,6 +920,7 @@ def registeruser():
 
     # Retrain model
     train_model()
+    load_cnn_model()
     remove_empty_cells()
 
     # Render updated unregistered list
@@ -943,4 +1009,7 @@ def logout():
 
 # Main Function
 if __name__ == '__main__':
+    cnn_model = None
+    class_names = []
+    load_cnn_model()
     app.run(port=5001, debug=True)
