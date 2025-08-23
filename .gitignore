@@ -16,6 +16,8 @@ __pycache__/
 # C extensions
 *.so
 
+final_model/face_recognition_model.h5
+
 # Distribution / packaging
 .Python
 build/
