@@ -92,6 +92,16 @@
         font-size: 20px;
         margin-top: 20px;
       }
+
+      .sign-up {
+        background-color: #ffffff;
+        border-color: #ffffff;
+        width: 100%;
+        height: 55px; /* Bigger button */
+        font-size: 20px;
+        margin-top: 20px;
+        color: #3d6f8f;
+      }
     </style>
   </head>
 
@@ -107,12 +117,12 @@
         <h1>Log In</h1>
         <form action="/login" method="POST">
           <div class="form-group">
-            <label for="username">Username</label>
+            <label for="admin_id">Admin ID</label>
             <input
               type="text"
               class="form-control"
-              id="username"
-              name="username"
+              id="admin_id"
+              name="admin_id"
               required
             />
           </div>
@@ -127,6 +137,7 @@
             />
           </div>
           <button type="submit" class="btn btn-primary">Log In</button>
+          <a href="/signup" class="sign-up">Sign Up</a>
         </form>
         {% if mess %}<br> <h5 style="padding: 25px; color: #201A19;"> {{ mess }} </h5>{% endif %}
       </div>

@@ -14,6 +14,10 @@ from tensorflow.keras.models import load_model
 import pickle
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
+from flask_mysqldb import MySQL
+import MySQLdb.cursors
+from werkzeug.security import generate_password_hash, check_password_hash
+import pickle
 # Load environment variables
 load_dotenv()
 
@@ -27,6 +31,14 @@ app.secret_key = os.getenv('SECRET_KEY')
 @app.errorhandler(500)
 def http_error_handler(error):
     return render_template('Error.html')
+
+# MySQL configurations
+app.config['MYSQL_HOST'] = os.getenv("MYSQL_HOST")
+app.config['MYSQL_USER'] = os.getenv("MYSQL_USER")
+app.config['MYSQL_PASSWORD'] = os.getenv("MYSQL_PASSWORD")
+app.config['MYSQL_DB'] = os.getenv("MYSQL_DB")
+
+mysql = MySQL(app)
 
 def load_csv_safely(csv_path, expected_columns):
     """Load a CSV safely. If missing or malformed, create/reset with expected columns."""
@@ -298,96 +310,81 @@ def identify_face(face_img):
 
 # ======= Remove Attendance of Deleted User ======
 def remAttendance():
-    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
-    dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
 
-    valid_ids = set(map(str, dfr['ID'])) | set(map(str, dfu['ID']))
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
-    attendance_dir = 'Attendance'
-    if not os.path.isdir(attendance_dir):
-        return
+    # Collect valid IDs from both user tables
+    cur.execute("SELECT id FROM student WHERE status='registered'")
+    registered_ids = {str(row['id']) for row in cur.fetchall()}
 
-    for file_name in os.listdir(attendance_dir):
-        if not file_name.endswith('.csv'):
-            continue
+    cur.execute("SELECT id FROM student WHERE status='unregistered'")
+    unregistered_ids = {str(row['id']) for row in cur.fetchall()}
 
-        file_path = os.path.join(attendance_dir, file_name)
-        try:
-            df = pd.read_csv(file_path)
-            df_filtered = df[df['ID'].astype(str).isin(valid_ids)]
-            df_filtered.to_csv(file_path, index=False)
-        except Exception as e:
-            print(f"[Warning] Could not process {file_path}: {e}")
+    valid_ids = registered_ids | unregistered_ids
 
-    remove_empty_cells()
+    # If there are valid IDs, remove all attendance records that don't belong to them
+    if valid_ids:
+        ids_str = ",".join([f"'{i}'" for i in valid_ids])
+        cur.execute(f"DELETE FROM attendance WHERE id NOT IN ({ids_str})")
+
+    mysql.connection.commit()
+    cur.close()
 
 # ======== Get Info From Attendance File =========
 def extract_attendance():
-    today_str = date.today().strftime("%Y-%m-%d")
-    attendance_file = os.path.join('Attendance', f'{today_str}.csv')
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
-    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
-    dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
+    datetoday_mysql = date.today().strftime("%Y-%m-%d")
+        
+    query = """
+        SELECT a.name, a.id, a.section, a.time,
+               COALESCE(s.status, 'Unknown') AS status
+        FROM attendance a
+        LEFT JOIN student s ON a.id = s.id
+        WHERE DATE(a.time) = %s
+        ORDER BY a.time ASC
+    """
+    cur.execute(query, (datetoday_mysql,))
+    rows = cur.fetchall()
+    cur.close()
 
-    if not os.path.exists(attendance_file) or os.path.getsize(attendance_file) == 0:
-        return [], [], [], [], today_str, [], 0
+    if not rows:
+        return [], [], [], [], datetoday, [], 0
 
-    df = pd.read_csv(attendance_file)
+    names = [r['name'] for r in rows]
+    rolls = [r['id'] for r in rows]
+    sec   = [r['section'] for r in rows]
+    times = [r['time'].strftime("%H:%M:%S") for r in rows]  # just time
+    reg   = [r['status'] for r in rows]
+    l     = len(rows)
 
-    names = df['Name'].tolist()
-    rolls = df['ID'].astype(str).tolist()
-    sec = df['Section'].tolist()
-    times = df['Time'].tolist()
-    dates = [today_str] * len(df)
-
-    unreg_ids = set(map(str, dfu['ID']))
-    reg_ids = set(map(str, dfr['ID']))
-
-    reg = ["Unregistered" if uid in unreg_ids else "Registered" if uid in reg_ids else "Unknown" for uid in rolls]
-
-    return names, rolls, sec, times, dates, reg, len(df)
+    return names, rolls, sec, times, datetoday, reg, l
 
 # ======== Save Attendance =========
 def add_attendance(name):
     username, userid, usersection = name.split('$')
-    current_time = datetime.now().strftime("%I:%M %p")
-    
-    file_path = f'Attendance/{datetoday}.csv'
-    
-    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-        df = pd.DataFrame(columns=['Name', 'ID', 'Section', 'Time'])
-        df.to_csv(file_path, index=False)
-    
-    try:
-        df = pd.read_csv(file_path)
-        df.columns = df.columns.str.strip()
-        if 'ID' not in df.columns or 'Name' not in df.columns:
-            df = pd.DataFrame(columns=['Name', 'ID', 'Section', 'Time'])
-            df.to_csv(file_path, index=False)
-    except pd.errors.EmptyDataError:
-        df = pd.DataFrame(columns=['Name', 'ID', 'Section', 'Time'])
-        df.to_csv(file_path, index=False)
+    current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    user_rows = df[df['ID'].astype(str) == str(userid)]
-    
-    if user_rows.empty:
-        new_entry = pd.DataFrame([[username, userid, usersection, current_time]],
-                                 columns=['Name', 'ID', 'Section', 'Time'])
-        new_entry.to_csv(file_path, mode='a', index=False, header=False)
-    else:
-        try:
-            last_time = user_rows.iloc[-1]['Time']
-            start_time = datetime.strptime(last_time, "%I:%M %p")
-            end_time = datetime.strptime(current_time, "%I:%M %p")
-            delta = (end_time - start_time).total_seconds() / 60
-            if delta > 40:
-                new_entry = pd.DataFrame([[username, userid, usersection, current_time]],
-                                         columns=['Name', 'ID', 'Section', 'Time'])
-                new_entry.to_csv(file_path, mode='a', index=False, header=False)
-        except Exception:
-            new_entry = pd.DataFrame([[username, userid, usersection, current_time]],
-                                     columns=['Name', 'ID', 'Section', 'Time'])
-            new_entry.to_csv(file_path, mode='a', index=False, header=False)
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+
+    # Check if already marked today (ignoring time, only by DATE)
+    cur.execute("""
+        SELECT * FROM attendance 
+        WHERE id=%s AND DATE(time)=%s
+    """, (userid, datetime.now().strftime("%Y-%m-%d")))
+    already = cur.fetchone()
+
+    if already:
+        cur.close()
+        return 
+
+    # Insert new attendance with full date+time
+    cur.execute("""
+        INSERT INTO attendance (id, name, section, time)
+        VALUES (%s, %s, %s, %s)
+    """, (userid, username, usersection, current_datetime))
+    mysql.connection.commit()
+    cur.close()
 
 # ======= Flask Home Page =========
 @app.route('/')
@@ -399,18 +396,17 @@ def home():
 # ======= Flask Attendance Page =========
 @app.route('/attendance')
 def take_attendance():
-    attendance_file = f'Attendance/{datetoday}.csv'
-
-    if not os.path.exists(attendance_file):
-        with open(attendance_file, 'w') as f:
-            f.write('Name,ID,Section,Time')
-
-    remove_empty_cells()
+    # Fetch today's attendance from MySQL
     names, rolls, sec, times, dates, reg, l = extract_attendance()
-
+    
     return render_template(
         'Attendance.html',
-        names=names, rolls=rolls, sec=sec, times=times, l=l, datetoday2=datetoday2
+        names=names,
+        rolls=rolls,
+        sec=sec,
+        times=times,
+        l=l,
+        datetoday2=datetoday2
     )
 
 @app.route('/attendancebtn', methods=['GET'])
@@ -524,22 +520,24 @@ def adduserbtn():
     newuserid = request.form['newuserid']
     newusersection = request.form['newusersection']
 
+    # Open camera
     cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
+    if cap is None or not cap.isOpened():
         return render_template('AddUser.html', mess='Camera not available.')
 
+    # Create user folder for storing images
     userimagefolder = f'static/faces/{newusername}${newuserid}${newusersection}'
-    os.makedirs(userimagefolder, exist_ok=True)
+    if not os.path.isdir(userimagefolder):
+        os.makedirs(userimagefolder)
 
-    csv_unreg_path = os.path.join(app.root_path, 'UserList', 'Unregistered.csv')
-    csv_reg_path = os.path.join(app.root_path, 'UserList', 'Registered.csv')
-
-    dfu = load_csv_safely(csv_unreg_path, ['Name', 'ID', 'Section'])
-    dfr = load_csv_safely(csv_reg_path, ['Name', 'ID', 'Section'])
-
-    if str(newuserid) in map(str, dfu['ID']) or str(newuserid) in map(str, dfr['ID']):
+    # Check if user already exists in DB
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cur.execute("SELECT * FROM student WHERE id = %s", (newuserid,))
+    existing_user = cur.fetchone()
+    if existing_user:
         cap.release()
-        return render_template('AddUser.html', mess='User already exists.')
+        cur.close()
+        return render_template('AddUser.html', mess='User already exists in database.')
 
     images_captured = 0
     max_images = 100
@@ -566,7 +564,9 @@ def adduserbtn():
 
         cv2.putText(frame, f'Images Captured: {images_captured}/{max_images}', (30,60),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,20), 2)
-        cv2.imshow('Collecting Face Data', frame)
+        cv2.namedWindow("Collecting Face Data", cv2.WND_PROP_FULLSCREEN)
+        cv2.setWindowProperty("Collecting Face Data", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        cv2.imshow("Collecting Face Data", frame)
         if cv2.waitKey(1) == 27:
             break
 
@@ -577,21 +577,32 @@ def adduserbtn():
         shutil.rmtree(userimagefolder)
         return render_template('AddUser.html', mess='Failed to capture valid face images.')
 
-    with open(csv_unreg_path, 'a', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow([newusername, newuserid, newusersection])
+    # Insert new user into MySQL
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cur.execute("""
+        INSERT INTO student (name, id, section, status)
+        VALUES (%s, %s, %s, 'unregistered')
+    """, (newusername, newuserid, newusersection))
+    mysql.connection.commit()
+    cur.close()
 
     # Retrain model immediately with new user
     train_model()
     load_cnn_model()  # Reload the model after training
 
-    dfu = load_csv_safely(csv_unreg_path, ['Name', 'ID', 'Section'])
-    names = dfu['Name'].tolist()
-    rolls = dfu['ID'].astype(str).tolist()
-    sec = dfu['Section'].tolist()
-    l = len(dfu)
+    # Fetch updated unregistered students
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cur.execute("SELECT * FROM student WHERE status='unregistered' ORDER BY id ASC")
+    rows = cur.fetchall()
+    cur.close()
 
-    return render_template('UnregisterUserList.html', names=names, rolls=rolls, sec=sec, l=l,
+    names = [row['name'] for row in rows]
+    rolls = [str(row['id']) for row in rows]
+    sec = [row['section'] for row in rows]
+    l = len(rows)
+
+    return render_template('UnregisterUserList.html',
+                           names=names, rolls=rolls, sec=sec, l=l,
                            mess=f'Number of Unregistered Students: {l}')
 
 @app.route('/attendancelist')
@@ -607,360 +618,322 @@ def attendance_list():
         names=names, rolls=rolls, sec=sec, times=times, dates=dates, reg=reg, l=l
     )
     
+# ========== Flask Search Attendance by Date ============
 @app.route('/attendancelistdate', methods=['GET', 'POST'])
 def attendancelistdate():
     if not g.user:
         return render_template('LogInForm.html')
 
-    input_date = request.form['date']
-    try:
-        year, month, day = input_date.split('-')
-        attendance_file = f'Attendance/{day}-{month}-{year}.csv'
-    except Exception as e:
-        return render_template('AttendanceList.html', mess="Invalid date format!")
+    date_selected = request.form['date']  # "YYYY-MM-DD"
 
-    if not os.path.exists(attendance_file):
-        names, rolls, sec, times, dates, reg, l = extract_attendance()
-        return render_template(
-            'AttendanceList.html',
-            names=names, rolls=rolls, sec=sec, times=times, dates=dates, reg=reg, l=0,
-            mess="Nothing Found!"
-        )
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cur.execute("""
+        SELECT a.name, a.id, a.section, a.time,
+               COALESCE(s.status, 'Unknown') AS status
+        FROM attendance a
+        LEFT JOIN student s ON a.id = s.id
+        WHERE DATE(a.time) = %s
+        ORDER BY a.time ASC
+    """, (date_selected,))
+    rows = cur.fetchall()
+    cur.close()
 
-    names, rolls, sec, times, dates, reg = [], [], [], [], [], []
-    l = 0
+    if not rows:
+        return render_template('AttendanceList.html', names=[], rolls=[], sec=[], times=[], reg=[], l=0,
+                               mess="No records for this date.")
 
-    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
-    dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
+    names = [r['name'] for r in rows]
+    rolls = [r['id'] for r in rows]
+    sec = [r['section'] for r in rows]
+    times = [r['time'].strftime("%H:%M:%S") for r in rows]
+    dates = [row['time'] for row in rows]
+    reg = [r['status'] for r in rows]
+    l = len(rows)
 
-    with open(attendance_file, "r") as f:
-        csv_file = csv.reader(f, delimiter=",")
-        next(csv_file, None)
+    return render_template('AttendanceList.html',
+                        names=names, rolls=rolls, sec=sec,
+                        times=times, dates=dates, reg=reg,
+                        l=l, mess=f"Total Attendance: {l}")
 
-        for row in csv_file:
-            names.append(row[0])
-            rolls.append(row[1])
-            sec.append(row[2])
-            times.append(row[3])
-            dates.append(f'{day}-{month}-{year}')
-
-            if str(row[1]) in map(str, dfu['ID']):
-                reg.append("Unregistered")
-            elif str(row[1]) in map(str, dfr['ID']):
-                reg.append("Registered")
-            else:
-                reg.append("Unknown")
-
-            l += 1
-
-    return render_template(
-        'AttendanceList.html',
-        names=names, rolls=rolls, sec=sec, times=times, dates=dates, reg=reg, l=l,
-        totalreg=totalreg(), mess=None if l else "Nothing Found!"
-    )
-
+# ========== Flask Search Attendance by ID ============
 @app.route('/attendancelistid', methods=['GET', 'POST'])
 def attendancelistid():
     if not g.user:
         return render_template('LogInForm.html')
 
-    search_id = request.form.get('id')
-    if not search_id:
-        return render_template('AttendanceList.html', mess="No ID provided!")
+    student_id = request.form.get('id')
+    if not student_id:
+        return render_template('AttendanceList.html', names=[], rolls=[], sec=[], times=[], dates=[], reg=[], l=0, mess="No ID provided!")
 
-    names, rolls, sec, times, dates, reg = [], [], [], [], [], []
-    count = 0
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cur.execute("SELECT * FROM attendance WHERE id = %s", (student_id,))
+    rows = cur.fetchall()
+    cur.close()
 
-    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
-    dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
+    if rows:
+        names = [row['name'] for row in rows]
+        rolls = [row['id'] for row in rows]
+        sec   = [row['section'] for row in rows]
+        times = [row['time'].strftime("%H:%M:%S") if row['time'] else "N/A" for row in rows]
+        dates = [row['time'].strftime("%Y-%m-%d") if row['time'] else "N/A" for row in rows]
+        reg   = ['Registered' if row['id'] in [r['id'] for r in rows] else 'Unregistered' for row in rows]
+        l = len(rows)
+        return render_template('AttendanceList.html',
+                               names=names, rolls=rolls, sec=sec,
+                               times=times, dates=dates, reg=reg,
+                               l=l, mess=f"Total Attendance: {l}")
+    else:
+        return render_template('AttendanceList.html',
+                               names=[], rolls=[], sec=[],
+                               times=[], dates=[], reg=[],
+                               l=0, mess="Nothing Found!")
 
-    attendance_dir = 'Attendance'
-    if not os.path.exists(attendance_dir):
-        return render_template('AttendanceList.html', mess="Attendance directory not found!")
-
-    for filename in os.listdir(attendance_dir):
-        filepath = os.path.join(attendance_dir, filename)
-        if not filename.endswith('.csv') or not os.path.isfile(filepath):
-            continue
-
-        try:
-            with open(filepath, "r") as f:
-                csv_file = csv.reader(f, delimiter=",")
-                next(csv_file, None)
-
-                for row in csv_file:
-                    if len(row) < 4:
-                        continue
-
-                    if row[1] != search_id:
-                        continue
-
-                    names.append(row[0])
-                    rolls.append(row[1])
-                    sec.append(row[2])
-                    times.append(row[3])
-                    dates.append(filename.replace('.csv', ''))
-
-                    if row[1] in map(str, dfu['ID']):
-                        reg.append("Unregistered")
-                    elif row[1] in map(str, dfr['ID']):
-                        reg.append("Registered")
-                    else:
-                        reg.append("Unknown")
-
-                    count += 1
-
-        except Exception as e:
-            print(f"[Warning] Skipping file {filename} due to error: {e}")
-
-    return render_template(
-        'AttendanceList.html',
-        names=names, rolls=rolls, sec=sec, times=times, dates=dates, reg=reg, l=count,
-        mess=f'Total Attendance: {count}' if count else "Nothing Found!"
-    )
-
+# ========== Flask Register User List ============
 @app.route('/registeruserlist')
 def register_user_list():
     if not g.user:
         return render_template('LogInForm.html')
 
-    remove_empty_cells()
-    csv_path = 'UserList/Registered.csv'
-    names, rolls, sec = [], [], []
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
-    try:
-        with open(csv_path, "r") as f:
-            csv_file = csv.reader(f, delimiter=",")
-            headers = next(csv_file, None)
-            for row in csv_file:
-                if len(row) != 3:
-                    print(f"[Warning] Skipping malformed row: {row}")
-                    continue
-                names.append(row[0].strip())
-                rolls.append(row[1].strip())
-                sec.append(row[2].strip())
-    except FileNotFoundError:
-        print(f"[Error] {csv_path} not found.")
-    except Exception as e:
-        print(f"[Error] Reading {csv_path}: {e}")
+    cur.execute("SELECT * FROM student WHERE status='registered' ORDER BY id ASC")
+    rows = cur.fetchall()
+    cur.close()
 
-    total = len(names)
-    mess = f'Number of Registered Students: {total}' if total else "Database is empty!"
+    names = [row['name'] for row in rows]
+    rolls = [row['id'] for row in rows]
+    sec = [row['section'] for row in rows]
+    l = len(rows)
 
-    return render_template('RegisterUserList.html', names=names, rolls=rolls, sec=sec, l=total, mess=mess)
+    mess = f'Number of Registered Students: {l}' if l else "Database is empty!"
+    return render_template('RegisterUserList.html', names=names, rolls=rolls, sec=sec, l=l, mess=mess)
 
+# ========== Flask Unregister a User ============
 @app.route('/unregisteruser', methods=['POST'])
 def unregisteruser():
     if not g.user:
         return render_template('LogInForm.html')
-
-    remove_empty_cells()
 
     try:
         idx = int(request.form['index'])
     except (ValueError, KeyError):
         return "Invalid index (not a number or missing)", 400
 
-    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
-    dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    # Get only registered students
+    cur.execute("SELECT * FROM student WHERE status='registered' ORDER BY id ASC")
+    registered = cur.fetchall()
 
-    if idx < 0 or idx >= len(dfr):
-        return f"Invalid index: {idx} for {len(dfr)} users", 400
+    if idx < 0 or idx >= len(registered):
+        return "Invalid index", 400
 
-    row = dfr.iloc[idx].copy()
+    user = registered[idx]
+    userid, username, section = user['id'], user['name'], user['section']
 
-    old_folder = f"static/faces/{row['Name']}${row['ID']}${row['Section']}"
-    new_folder = f"static/faces/{row['Name']}${row['ID']}$None"
-
+        # Move the face folder (optional)
+    old_folder = f"static/faces/{username}${userid}${section}"
+    new_folder = f"static/faces/{username}${userid}$None"
     if os.path.exists(old_folder):
         if os.path.exists(new_folder):
             shutil.rmtree(new_folder)
         shutil.move(old_folder, new_folder)
+        
+    # Update status in single student table
+    cur.execute(
+        "UPDATE student SET status='unregistered', section=NULL WHERE id=%s",
+        (userid,)
+    )
+    mysql.connection.commit()
+    cur.close()
 
-    row['Section'] = 'None'
+    # Return updated list of registered students
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cur.execute("SELECT * FROM student WHERE status='registered' ORDER BY id ASC")
+    rows = cur.fetchall()
+    cur.close()
 
-    dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
-    dfu.to_csv('UserList/Unregistered.csv', index=False)
+    names = [r['name'] for r in rows]
+    rolls = [r['id'] for r in rows]
+    sec = [r['section'] for r in rows]
+    l = len(rows)
 
-    dfr = dfr.drop(dfr.index[idx])
-    dfr.to_csv('UserList/Registered.csv', index=False)
-
-    load_cnn_model()
-    remove_empty_cells()
-
-    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
-    names = dfr['Name'].tolist()
-    rolls = dfr['ID'].astype(str).tolist()
-    sec = dfr['Section'].tolist()
-    l = len(dfr)
-    mess = f'Number of Registered Students: {l}' if l else "Database is empty!"
+    mess = f'Number of Registered Students: {l}' if l > 0 else "Database is empty!"
 
     return render_template('RegisterUserList.html', names=names, rolls=rolls, sec=sec, l=l, mess=mess)
 
-@app.route('/deleteregistereduser', methods=['GET', 'POST'])
-def deleteregistereduser():
+# ========== Flask Delete a User from Unregistered List ============
+@app.route('/deleteunregistereduser', methods=['POST'])
+def deleteunregistereduser():
     if not g.user:
         return render_template('LogInForm.html')
 
-    try:
-        idx = int(request.form['index'])
-    except (ValueError, KeyError):
-        return "Invalid index provided", 400
+    idx = int(request.form['index'])
 
-    remove_empty_cells()
-    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    # Fetch unregistered students only
+    cur.execute("SELECT * FROM student WHERE status='unregistered' ORDER BY id ASC")
+    unregistered = cur.fetchall()
 
-    if idx < 0 or idx >= len(dfr):
-        return f"Invalid index: {idx} for {len(dfr)} users", 400
+    if idx >= len(unregistered):
+        return render_template('UnregisterUserList.html', names=[], rolls=[], sec=[], l=0, mess="Invalid user index.")
 
-    username, userid, usersec = dfr.iloc[idx][['Name','ID','Section']]
+    user = unregistered[idx]
+    username, userid, usersec = user['name'], user['id'], user['section']
 
-    face_folder = f'static/faces/{username}${userid}${usersec}'
-    if os.path.exists(face_folder):
-        shutil.rmtree(face_folder)
+    folder = f'static/faces/{username}${userid}${usersec}'
+    if os.path.exists(folder):
+        shutil.rmtree(folder)
         train_model()
-        load_cnn_model()
 
-    dfr = dfr.drop(dfr.index[idx])
-    dfr.to_csv('UserList/Registered.csv', index=False)
+    # Delete student from table
+    cur.execute("DELETE FROM student WHERE id = %s AND status='unregistered'", (userid,))
+    mysql.connection.commit()
+    cur.close()
 
-    remove_empty_cells()
-    remAttendance()
-
-    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
-    names = dfr['Name'].tolist()
-    rolls = dfr['ID'].astype(str).tolist()
-    sec = dfr['Section'].tolist()
-    l = len(dfr)
-    mess = f'Number of Registered Students: {l}' if l else "Database is empty!"
-
-    return render_template('RegisterUserList.html', names=names, rolls=rolls, sec=sec, l=l, mess=mess)
+    return redirect(url_for('unregister_user_list'))
         
+# ========== Flask Unregister User List ============
 @app.route('/unregisteruserlist')
 def unregister_user_list():
     if not g.user:
         return render_template('LogInForm.html')
-
-    remove_empty_cells()
-    df = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
-
-    if df.empty:
-        return render_template('UnregisterUserList.html', names=[], rolls=[], sec=[], l=0,
-                               mess="Database is empty!")
-
-    names = df['Name'].astype(str).tolist()
-    rolls = df['ID'].astype(str).tolist()
-    sec = df['Section'].astype(str).tolist()
-    l = len(df)
     
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cur.execute("SELECT * FROM student WHERE status='unregistered' ORDER BY id ASC")
+    rows = cur.fetchall()
+    cur.close()
+
+    if not rows:
+        return render_template('UnregisterUserList.html', names=[], rolls=[], sec=[], l=0, mess="Database is empty!")
+
+    names = [row['name'] for row in rows]
+    rolls = [row['id'] for row in rows]
+    sec = [row['section'] for row in rows]
+    l = len(rows)
+
     return render_template('UnregisterUserList.html', names=names, rolls=rolls, sec=sec, l=l,
                            mess=f'Number of Unregistered Students: {l}')
 
-@app.route('/registeruser', methods=['GET', 'POST'])
+# ========== Flask Register a User ============
+@app.route('/registeruser', methods=['POST'])
 def registeruser():
     if not g.user:
         return render_template('LogInForm.html')
 
     try:
         idx = int(request.form['index'])
-        new_section = request.form['section'].strip()
-    except (KeyError, ValueError):
-        return render_template('UnregisterUserList.html', names=[], rolls=[], sec=[], l=0,
-                               mess="Invalid input.")
+        section = request.form['section']
+    except (ValueError, KeyError):
+        return "Invalid input", 400
 
-    remove_empty_cells()
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    # Get all unregistered students
+    cur.execute("SELECT * FROM student WHERE status='unregistered' ORDER BY id ASC")
+    unregistered = cur.fetchall()
 
-    dfr = load_csv_safely('UserList/Registered.csv', ['Name', 'ID', 'Section'])
-    dfu = load_csv_safely('UserList/Unregistered.csv', ['Name', 'ID', 'Section'])
+    if idx < 0 or idx >= len(unregistered):
+        return "Invalid user index", 400
 
-    if idx < 0 or idx >= len(dfu):
-        return render_template('UnregisterUserList.html', names=[], rolls=rolls, sec=sec, l=l, mess="Invalid user index.")
+    user = unregistered[idx]
+    name, userid = user['name'], user['id']
 
-    row = dfu.iloc[idx].copy()
-    name, uid = row['Name'], row['ID']
-
-    old_folder = f'static/faces/{name}${uid}$None'
-    new_folder = f'static/faces/{name}${uid}${new_section}'
+    # Move the face folder
+    old_folder = f"static/faces/{name}${userid}$None"
+    new_folder = f"static/faces/{name}${userid}${section}"
     if os.path.exists(old_folder):
+        if os.path.exists(new_folder):
+            shutil.rmtree(new_folder)
         shutil.move(old_folder, new_folder)
 
-    row['Section'] = new_section
-    dfr = pd.concat([dfr, pd.DataFrame([row])], ignore_index=True)
-    dfr.to_csv('UserList/Registered.csv', index=False)
+    # Update status and section in single student table
+    cur.execute(
+        "UPDATE student SET status='registered', section=%s WHERE id=%s",
+        (section, userid)
+    )
+    mysql.connection.commit()
+    cur.close()
 
-    dfu = dfu.drop(index=idx)
-    dfu.to_csv('UserList/Unregistered.csv', index=False)
+    # Reload unregistered list
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cur.execute("SELECT * FROM student WHERE status='unregistered' ORDER BY id ASC")
+    rows = cur.fetchall()
+    cur.close()
 
-    load_cnn_model()
-    remove_empty_cells()
+    names = [r['name'] for r in rows]
+    rolls = [r['user_id'] for r in rows]  # or r['id'] if you prefer DB ID
+    secs = [r['section'] for r in rows]
+    l = len(rows)
 
-    names = dfu['Name'].tolist()
-    rolls = dfu['ID'].astype(str).tolist()
-    secs = dfu['Section'].tolist()
-    l = len(dfu)
     mess = f'Number of Unregistered Students: {l}' if l > 0 else "Database is empty!"
-
     return render_template('UnregisterUserList.html', names=names, rolls=rolls, sec=secs, l=l, mess=mess)
 
-@app.route('/deleteunregistereduser', methods=['GET', 'POST'])
-def deleteunregistereduser():
+# ========== Flask Delete a User from Registered List ============
+@app.route('/deleteregistereduser', methods=['POST'])
+def deleteregistereduser():
     if not g.user:
         return render_template('LogInForm.html')
 
-    try:
-        idx = int(request.form.get('index', -1))
-    except ValueError:
-        idx = -1
+    idx = int(request.form['index'])
 
-    remove_empty_cells()
-    dfu = pd.read_csv('UserList/Unregistered.csv')
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cur.execute("SELECT * FROM student WHERE status='registered' ORDER BY id ASC")
+    registered = cur.fetchall()
 
-    if idx < 0 or idx >= len(dfu):
-        return render_template('UnregisterUserList.html', names=[], rolls=[], sec=[], l=0,
-                               mess="Invalid user index.")
+    if idx >= len(registered):
+        return render_template('RegisterUserList.html', names=[], rolls=[], sec=[], l=0, mess="Invalid user index.")
 
-    row = dfu.iloc[idx].copy()
-    folder_name = f"{row['Name']}${row['ID']}${row['Section']}"
-    folder_path = os.path.join('static/faces', folder_name)
+    user = registered[idx]
+    username, userid, usersec = user['name'], user['id'], user['section']
 
-    if os.path.exists(folder_path):
-        shutil.rmtree(folder_path)
+    # Delete face folder
+    folder = f'static/faces/{username}${userid}${usersec}'
+    if os.path.exists(folder):
+        shutil.rmtree(folder)
         train_model()
-        load_cnn_model()
 
-    dfu.drop(index=idx, inplace=True)
-    dfu.to_csv('UserList/Unregistered.csv', index=False)
+    # Delete from DB
+    cur.execute("DELETE FROM student WHERE id = %s and status='registered'", (userid,))
+    mysql.connection.commit()
+    cur.close()
 
-    remove_empty_cells()
-    remAttendance()
-
-    if dfu.empty:
-        return render_template('UnregisterUserList.html', names=[], rolls=[], sec=[], l=0,
-                               mess="Database is empty!")
-
-    names = dfu['Name'].tolist()
-    rolls = dfu['ID'].astype(str).tolist()
-    secs = dfu['Section'].tolist()
-    l = len(dfu)
-
-    return render_template('UnregisterUserList.html', names=names, rolls=rolls, sec=secs, l=l,
-                           mess=f'Number of Unregistered Students: {l}')
+    # Refresh list
+    return redirect(url_for('register_user_list'))
     
+# ======== Flask Login =========
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if g.user:
         session.pop('admin', None)
-        return redirect(url_for('home'))
+        return redirect(url_for('home', admin=False))
 
     if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '').strip()
+        admin_id = request.form['admin_id']
+        password = request.form['password']
 
-        if username == 'admin' and password == '12345':
-            session['admin'] = username
-            return redirect(url_for('home'))
+        cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+
+        # Step 1: Fetch user
+        cur.execute("SELECT * FROM admin_signup WHERE admin_id = %s", (admin_id,))
+        user = cur.fetchone()
+
+        if user and check_password_hash(user['password'], password):
+            # Step 2: Insert login record (store login time, not password!)
+            try:
+                cur.execute("INSERT INTO admin_login (admin_id, username) VALUES (%s, %s)",
+                            (admin_id, user['username']))
+                mysql.connection.commit()
+                print("Stored login record for:", admin_id)
+            except Exception as e:
+                mysql.connection.rollback()
+                print("!!!Error inserting login record:", e)
+
+            # Step 3: Save session
+            session['admin'] = admin_id
+            cur.close()
+            return redirect(url_for('home', admin=True, mess=f'Logged in as {admin_id}'))
         else:
-            return render_template('LogInForm.html', mess='Incorrect Username or Password')
+            cur.close()
+            return render_template('LogInForm.html', mess='Incorrect Admin ID or Password')
 
     return render_template('LogInForm.html')
 
@@ -968,6 +941,65 @@ def login():
 def logout():
     session.pop('admin', None)
     return render_template('LogInForm.html')
+
+# ======== Flask Sign Up =========
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    
+    if request.method == 'POST':
+        admin_id = request.form['admin_id']
+        username = request.form['username']
+        password = request.form['password']
+        hashed_password = generate_password_hash(password)
+
+        cur = mysql.connection.cursor()
+        cur.execute("SELECT * FROM admin_signup WHERE admin_id = %s", (admin_id,))
+        existing_user = cur.fetchone()
+
+        # Check if user already exists
+        if existing_user:
+            mess = "Admin ID already exists!"
+            return render_template('SignUpPage.html', mess=mess)
+
+        try:
+            # Insert new user
+            cur.execute("INSERT INTO admin_signup (admin_id, username, password) VALUES (%s, %s, %s)",
+                        (admin_id, username, hashed_password))
+            mysql.connection.commit()
+            mess = "Account created successfully! Please log in."
+            return redirect(url_for('login', mess=mess))
+        except Exception as e:
+            mysql.connection.rollback()
+            mess = f"Database error: {str(e)}"
+            return render_template('SignUpPage.html', mess=mess)
+        finally:
+            cur.close()
+
+    return render_template('SignUpPage.html')
+
+@app.route('/adminlog')
+def adminlog():
+    # Ensure admin is logged in
+    if 'admin' not in session:
+        return render_template('LogInForm.html', mess="Please log in first.")
+
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    
+    # Fetch all admin users from signup table
+    cur.execute("""
+        SELECT l.admin_id, s.username 
+        FROM admin_login l
+        JOIN admin_signup s ON l.admin_id = s.admin_id
+        ORDER BY l.admin_id DESC
+    """)
+    logs = cur.fetchall()
+    cur.close()
+
+    admin_ids = [log['admin_id'] for log in logs]
+    usernames = [log['username'] for log in logs]
+
+    return render_template('AdminLog.html', admin_ids=admin_ids, usernames=usernames, l=len(logs))
+
 # Main Function
 if __name__ == '__main__':
     # Load or train model

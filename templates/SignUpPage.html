@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sign up - Attendify</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC"
+      crossorigin="anonymous"
+    />
+    <style>
+      body,
+      html {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background-image: url("static/images/BG-image.png");
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-attachment: fixed;
+        color: black;
+      }
+
+      .container {
+        height: 90vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+      }
+
+      .container-2 {
+        max-width: 600px; 
+        width: 100%;
+        min-height: 500px;
+        background-color: rgba(255, 255, 255, 0.85);
+        padding: 60px 80px; /* More space inside */
+        border-radius: 50px;
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.3);
+        display: flex;                      
+        flex-direction: column;              
+        justify-content: center;
+      }
+
+      .text-link {
+        color: #ffffff;
+        text-decoration: none;
+        padding: 0 20px;
+      }
+
+      a:hover.text-link {
+        color: #ffffff;
+        text-decoration: none;
+      }
+
+      h1.page-title {
+        font-size: 44px;
+        font-weight: bold;
+        text-align: center;
+      }
+
+      h1 {
+        font-size: 40px; /* Bigger heading */
+        font-weight: bold;
+        margin-bottom: 40px;
+      }
+
+      .form-group label {
+        font-size: 18px; /* Bigger label text */
+        margin-bottom: 8px;
+        display: block;
+      }
+
+      .form-control {
+        height: 50px; /* Taller input */
+        font-size: 18px; /* Bigger text */
+        padding: 10px 15px;
+        margin-bottom: 20px; /* More space between inputs */
+      }
+
+      .btn-primary {
+        background-color: #3d6f8f;
+        border-color: #3d6f8f;
+        width: 100%;
+        height: 55px; /* Bigger button */
+        font-size: 20px;
+        margin-top: 20px;
+        text-color: #ffffff;
+      }
+
+      .log-in {
+        background-color: #ffffff;
+        border-color: #ffffff;
+        width: 100%;
+        height: 55px; /* Bigger button */
+        font-size: 20px;
+        margin-top: 20px;
+        color: #3d6f8f;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container text-center">
+      <div class="container-1 text-center mt-5">
+        <h1 class="text-white fw-bold page-title">
+          <a href="http://127.0.0.1:5001/" class="text-link">Attendify</a>
+        </h1>
+      </div>
+      <!-- Sign Up Form -->
+      <div class="container-2">
+        <h1>Sign Up</h1>
+        <form action="/signup" method="POST">
+          <div class="form-group">
+            <label for="admin_id">ID</label>
+            <input
+              type="text"
+              class="form-control"
+              id="admin_id"
+              name="admin_id"
+              required
+            />
+          </div>
+          <div class="form-group">
+            <label for="username">Username</label>
+            <input
+              type="text"
+              class="form-control"
+              id="username"
+              name="username"
+              required
+            />
+          </div>
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input
+              type="password"
+              class="form-control"
+              id="password"
+              name="password"
+              required
+            />
+          </div>
+          <button type="submit" class="btn btn-primary">Sign Up</button>
+          <a href="/login" class="log-in">Log In</a>
+        </form>
+        {% if mess %}<br> <h5 style="padding: 25px; color: #201A19;"> {{ mess }} </h5>{% endif %}
+      </div>
+    </div>
+    <script
+      src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/js/bootstrap.bundle.min.js"
+      integrity="sha384-MrcW6ZMFYlzcLA8Nl+NtUVF0sA7MsXsP1UyJoMp4YLEuNSfAP+JcXn/tWtIaxVXM"
+      crossorigin="anonymous"
+    ></script>
+    <script type="text/javascript">
+    function formatAMPM(time) {
+      var hours = time.getHours();
+      var minutes = time.getMinutes();
+      var ampm = hours >= 12 ? 'PM' : 'AM';
+      hours %= 12;
+      hours = hours ? hours : 12;
+      hours = hours < 10 ? '0' + hours : hours;
+      minutes = minutes < 10 ? '0' + minutes : minutes;
+      var strTime = hours + ':' + minutes + ' ' + ampm;
+      return strTime;
+    }
+    var clockElement = document.getElementById('clock');
+
+    function clock() {
+      clockElement.textContent = formatAMPM(new Date()).toString();
+    }
+    setInterval(clock, 1000);
+    </script>
+  </body>
+</html>
