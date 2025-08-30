@@ -1,7 +1,8 @@
-opencv-python
+opencv-python==4.8.1.78
+mediapipe
 Flask
-numpy
-scikit-learn==1.7.1
+numpy==1.26.4
+scikit-learn==1.4.2
 pandas
 joblib
 tensorflow
@@ -11,3 +12,6 @@ matplotlib
 flask-mysqldb
 werkzeug
 pandas
+mtcnn==0.1.1
+scikit-image
+imblearn

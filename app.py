@@ -1,6 +1,7 @@
 import os
 import csv
 import shutil
+import time
 from datetime import datetime, date
 
 import cv2
@@ -9,15 +10,12 @@ import pandas as pd
 from flask import Flask, render_template, redirect, request, session, g, url_for
 from dotenv import load_dotenv
 
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-import pickle
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from sklearn.neighbors import KNeighborsClassifier
+import joblib
 
 from flask_mysqldb import MySQL
 import MySQLdb.cursors
 from werkzeug.security import generate_password_hash, check_password_hash
-import pickle
 # Load environment variables
 load_dotenv()
 
@@ -74,7 +72,6 @@ datetoday2 = datetime.today().strftime("%d %B %Y")
 
 # Capture the video
 face_detector = cv2.CascadeClassifier('static/haarcascade_frontalface_default.xml')
-eye_detector = cv2.CascadeClassifier('static/haarcascade_eye.xml')
 cap = cv2.VideoCapture(0)
 
 # ======= Check and Make Folders ========
@@ -95,8 +92,7 @@ for file_path, header in files_with_headers.items():
             f.write(header + '\n')
 
 # ======= Global Variables =======
-cnn_model = None
-class_names = {}
+# KNN model is loaded on-demand from static/face_recognition_model.pkl
 
 # ======= Remove Empty Rows From CSV Files =======
 def remove_empty_cells():
@@ -128,185 +124,94 @@ def totalreg():
     return len([name for name in os.listdir(faces_dir) if os.path.isdir(os.path.join(faces_dir, name))])
 
 # ======= Get Face From Image =========
-def extract_faces_and_eyes(img):
-    if img is None or img.size == 0:
-        return (), ()
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # Detect faces
-    faces = face_detector.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
-    eyes_list = []
-
-    for (x, y, w, h) in faces:
-        roi_gray = gray[y:y+h, x:x+w]
-        eyes = eye_detector.detectMultiScale(roi_gray, scaleFactor=1.1, minNeighbors=3)
-        eyes_global = [(ex + x, ey + y, ew, eh) for (ex, ey, ew, eh) in eyes]
-        eyes_list.append(eyes_global)
-
-    return faces, eyes_list
+def extract_faces(img):
+    try:
+        if img is None:
+            print("[DEBUG] extract_faces: Input image is None")
+            return np.array([])
+        gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        face_points = face_detector.detectMultiScale(gray_img, 1.5, 7)
+        if len(face_points) > 0:
+            print(f"[DEBUG] extract_faces: Detected {len(face_points)} face(s)")
+        return face_points
+    except Exception as e:
+        print(f"[ERROR] extract_faces: Face detection failed - {e}")
+        return np.array([])
 
 # ======= Train Model Using Available Faces ========
 def train_model():
-    global cnn_model, class_names
+    print("[INFO] train_model: Starting model training...")
+    
+    if 'face_recognition_model.pkl' in os.listdir('static'):
+        print("[INFO] train_model: Removing old model file...")
+        os.remove('static/face_recognition_model.pkl')
 
-    face_dir = 'static/faces'
-    model_path = 'final_model/face_recognition_model.h5'
-    class_path = 'final_model/class_names.pkl'
-
-    if not os.path.exists(face_dir) or len(os.listdir(face_dir)) == 0:
-        print("[Info] No faces to train on.")
+    if len(os.listdir('static/faces')) == 0:
+        print("[WARNING] train_model: No face images found in static/faces/")
         return
+
+    print(f"[INFO] train_model: Found {len(os.listdir('static/faces'))} user directories")
+    
+    faces = []
+    labels = []
+    user_list = os.listdir('static/faces')
+    
+    for user in user_list:
+        user_images = os.listdir(f'static/faces/{user}')
+        print(f"[INFO] train_model: Processing user '{user}' with {len(user_images)} images")
         
-    # Remove old model if exists
-    if os.path.exists(model_path):
-        os.remove(model_path)
-    if os.path.exists(class_path):
-        os.remove(class_path)
+        for img_name in user_images:
+            img_path = f'static/faces/{user}/{img_name}'
+            img = cv2.imread(img_path)
+            if img is not None:
+                resized_face = cv2.resize(img, (50, 50))
+                faces.append(resized_face.ravel())
+                labels.append(user)
+            else:
+                print(f"[WARNING] train_model: Failed to load image {img_path}")
 
-    # Data augmentation
-    datagen = ImageDataGenerator(
-        rescale=1./255,
-        rotation_range=15,
-        width_shift_range=0.1,
-        height_shift_range=0.1,
-        shear_range=0.1,
-        zoom_range=0.1,
-        horizontal_flip=True,
-        brightness_range=[0.9, 1.1],
-        validation_split=0.2
-    )
-
-    # Train and validation generators
-    train_data = datagen.flow_from_directory(
-        face_dir, target_size=(224,224), batch_size=32,
-        class_mode='categorical', subset='training', shuffle=True
-    )
-    val_data = datagen.flow_from_directory(
-        face_dir, target_size=(224,224), batch_size=32,
-        class_mode='categorical', subset='validation', shuffle=True
-    )
-    # Build CNN model
-    cnn_model = tf.keras.models.Sequential([
-        tf.keras.layers.Conv2D(32, (3,3), activation="relu", input_shape=(224,224,3)),
-        tf.keras.layers.MaxPooling2D(2,2),
-        tf.keras.layers.Conv2D(64, (3,3), activation="relu"),
-        tf.keras.layers.MaxPooling2D(2,2),
-        tf.keras.layers.Conv2D(128, (3,3), activation="relu"),
-        tf.keras.layers.MaxPooling2D(2,2),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(256, activation="relu"),
-        tf.keras.layers.Dropout(0.5),
-        tf.keras.layers.Dense(train_data.num_classes, activation="softmax")
-    ])
-
-    cnn_model.compile(
-        loss="categorical_crossentropy",
-        optimizer=tf.keras.optimizers.Adam(0.001),
-        metrics=["accuracy"]
-    )
-
-    # Train the model
-    print("[INFO] Training model...")
-    cnn_model.fit(
-        train_data, steps_per_epoch=len(train_data),
-        validation_data=val_data, validation_steps=len(val_data),
-        epochs=20, verbose=1
-    )
-
-    # Save model and class names
-    os.makedirs('final_model', exist_ok=True)
-    cnn_model.save(model_path)
+    print(f"[INFO] train_model: Total faces processed: {len(faces)}")
+    print(f"[INFO] train_model: Total labels: {len(labels)}")
     
-    # Create class names mapping from training data
-    class_names = {v: k for k, v in train_data.class_indices.items()}
-    with open(class_path, 'wb') as f:
-        pickle.dump(class_names, f)
+    if len(faces) == 0:
+        print("[ERROR] train_model: No valid faces found for training")
+        return
 
-    print("Model trained and saved successfully!")
-    print(f"Classes: {class_names}")
+    faces = np.array(faces)
+    print(f"[INFO] train_model: Training KNN model with {len(faces)} samples...")
+    
+    knn = KNeighborsClassifier(n_neighbors=7)
+    knn.fit(faces, labels)
+    
+    model_path = 'static/face_recognition_model.pkl'
+    joblib.dump(knn, model_path)
+    print(f"[SUCCESS] train_model: Model saved to {model_path}")
+    print(f"[INFO] train_model: Model trained on {len(set(labels))} unique users")
 
-# ======= Load CNN Model =======
+# ======= Load KNN Model =======
 def load_cnn_model():
-    global cnn_model, class_names
+    # This function is kept for compatibility but KNN model is loaded on-demand
+    pass
 
-    model_path = 'final_model/face_recognition_model.h5'
-    class_names_path = 'final_model/class_names.pkl'
-
-    # Load CNN model
-    if os.path.exists(model_path):
-        try:
-            cnn_model = load_model(model_path)
-        except Exception as e:
-            cnn_model = None
-    else:
-        print(f"[WARNING] CNN model not found at {model_path}.")
-        cnn_model = None
-
-    # Load class_names
-    if os.path.exists(class_names_path):
-        try:
-            with open(class_names_path, 'rb') as f:
-                class_names = pickle.load(f)
-        except Exception as e:
-            print(f"[ERROR] Failed to load class names: {e}")
-            class_names = {}
-    else:
-        print(f"[WARNING] class_names.pkl not found.")
-        class_names = {}
-
-    # Validate saved classes vs current face folders to avoid stale labels influencing predictions
+# ======= Identify Face Using KNN Model ========
+def identify_face(face_array):
     try:
-        faces_root = 'static/faces'
-        if os.path.isdir(faces_root):
-            current_dirs = {d for d in os.listdir(faces_root) if os.path.isdir(os.path.join(faces_root, d))}
-            saved_labels = set(class_names.values()) if isinstance(class_names, dict) else set()
-            if saved_labels and not saved_labels.issubset(current_dirs):
-                print("[INFO] Detected class mismatch with current folders. Retraining model...")
-                train_model()
-                if os.path.exists(model_path):
-                    cnn_model = load_model(model_path)
-                if os.path.exists(class_names_path):
-                    with open(class_names_path, 'rb') as f:
-                        class_names = pickle.load(f)
+        model_path = 'static/face_recognition_model.pkl'
+        if not os.path.exists(model_path):
+            print(f"[WARNING] identify_face: Model file not found at {model_path}")
+            return ["Unknown"]
+        
+        print(f"[DEBUG] identify_face: Loading model from {model_path}")
+        model = joblib.load(model_path)
+        
+        print(f"[DEBUG] identify_face: Predicting face with shape {face_array.shape}")
+        prediction = model.predict(face_array)
+        print(f"[DEBUG] identify_face: Prediction result: {prediction}")
+        
+        return prediction
     except Exception as e:
-        print(f"[WARN] Class validation failed: {e}")
-
-# ======= Identify Face Using CNN Model ========
-def identify_face(face_img):
-    global cnn_model, class_names
-    
-    if face_img is None or cnn_model is None:
-        print("[DEBUG] No model or image available")
-        return "Unknown"
-
-    try:
-        # Preprocess face image
-        face_resized = cv2.resize(face_img, (224, 224))
-        face_rgb = cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
-        face_normalized = face_rgb.astype('float32') / 255.0
-        face_input = np.expand_dims(face_normalized, axis=0)
-
-        # Predict and get class with confidence
-        preds = cnn_model.predict(face_input, verbose=0)[0]
-        top1 = int(np.argmax(preds))
-        top2 = int(np.argsort(preds)[-2]) if preds.size >= 2 else top1
-        p1 = float(preds[top1])
-        p2 = float(preds[top2])
-
-        # Confidence floor and separation margin vs runner-up to avoid near-tie flips
-        CONFIDENCE_THRESHOLD = 0.7
-        MARGIN = 0.15
-
-        if p1 < CONFIDENCE_THRESHOLD or (p1 - p2) < MARGIN:
-            return "Unknown"
-
-        # Map to class name
-        return class_names.get(top1, "Unknown")
-    
-    except Exception as e:
-        print(f"[Error] Face identification failed: {e}")
-        return "Unknown"
+        print(f"[ERROR] identify_face: Face identification failed - {e}")
+        return ["Unknown"]
 
 # ======= Remove Attendance of Deleted User ======
 def remAttendance():
@@ -354,7 +259,7 @@ def extract_attendance():
     names = [r['name'] for r in rows]
     rolls = [r['id'] for r in rows]
     sec   = [r['section'] for r in rows]
-    times = [r['time'].strftime("%H:%M:%S") for r in rows]  # just time
+    times = [r['time'].strftime("%H:%M:%S") for r in rows]
     reg   = [r['status'] for r in rows]
     l     = len(rows)
 
@@ -362,29 +267,52 @@ def extract_attendance():
 
 # ======== Save Attendance =========
 def add_attendance(name):
-    username, userid, usersection = name.split('$')
-    current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        print(f"[INFO] add_attendance: Processing attendance for '{name}'")
+        
+        if '$' not in name:
+            print(f"[ERROR] add_attendance: Invalid name format: {name}")
+            return
+            
+        parts = name.split('$')
+        if len(parts) < 3:
+            print(f"[ERROR] add_attendance: Insufficient name parts: {name}")
+            return
+            
+        username = parts[0]
+        userid = parts[1]
+        usersection = parts[2]
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        print(f"[INFO] add_attendance: User: {username}, ID: {userid}, Section: {usersection}")
+        print(f"[INFO] add_attendance: Current time: {current_datetime}")
 
-    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+        cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
-    # Check if already marked today (ignoring time, only by DATE)
-    cur.execute("""
-        SELECT * FROM attendance 
-        WHERE id=%s AND DATE(time)=%s
-    """, (userid, datetime.now().strftime("%Y-%m-%d")))
-    already = cur.fetchone()
+        # Check if already marked today (ignoring time, only by DATE)
+        print(f"[DEBUG] add_attendance: Checking if user {userid} already marked attendance today")
+        cur.execute("""
+            SELECT * FROM attendance 
+            WHERE id=%s AND DATE(time)=%s
+        """, (userid, datetime.now().strftime("%Y-%m-%d")))
+        already = cur.fetchone()
 
-    if already:
+        if already:
+            print(f"[INFO] add_attendance: User {userid} already marked attendance today")
+            cur.close()
+            return 
+
+        # Insert new attendance with full date+time
+        print(f"[INFO] add_attendance: Inserting new attendance record for user {userid}")
+        cur.execute("""
+            INSERT INTO attendance (id, name, section, time)
+            VALUES (%s, %s, %s, %s)
+        """, (userid, username, usersection, current_datetime))
+        mysql.connection.commit()
         cur.close()
-        return 
-
-    # Insert new attendance with full date+time
-    cur.execute("""
-        INSERT INTO attendance (id, name, section, time)
-        VALUES (%s, %s, %s, %s)
-    """, (userid, username, usersection, current_datetime))
-    mysql.connection.commit()
-    cur.close()
+        print(f"[SUCCESS] add_attendance: Attendance recorded successfully for user {userid}")
+    except Exception as e:
+        print(f"[ERROR] add_attendance: Failed to add attendance - {e}")
 
 # ======= Flask Home Page =========
 @app.route('/')
@@ -411,102 +339,105 @@ def take_attendance():
 
 @app.route('/attendancebtn', methods=['GET'])
 def attendancebtn():
-    global cnn_model, class_names
+    print("[INFO] attendancebtn: Starting attendance capture...")
     
     if len(os.listdir('static/faces')) == 0:
+        print("[WARNING] attendancebtn: No face images found in database")
         return render_template('Attendance.html', datetoday2=datetoday2,
                                mess='Database is empty! Register yourself first.')
 
-    # Ensure model exists and is loaded
-    if cnn_model is None:
-        print("[INFO] Model not loaded, attempting to load...")
-        load_cnn_model()
-        
-    if cnn_model is None:
-        print("[INFO] No model found, training new model...")
+    print(f"[INFO] attendancebtn: Found {len(os.listdir('static/faces'))} users in database")
+    
+    if 'face_recognition_model.pkl' not in os.listdir('static'):
+        print("[INFO] attendancebtn: Model not found, training new model...")
         train_model()
-        load_cnn_model()
+    else:
+        print("[INFO] attendancebtn: Using existing trained model")
 
-    if cnn_model is None:
-        return render_template('Attendance.html', datetoday2=datetoday2,
-                               mess='Failed to load or train model.')
-
+    print("[INFO] attendancebtn: Opening camera...")
     cap = cv2.VideoCapture(0)
     if cap is None or not cap.isOpened():
+        print("[ERROR] attendancebtn: Failed to open camera")
         names, rolls, sec, times, dates, reg, l = extract_attendance()
         return render_template('Attendance.html', names=names, rolls=rolls, sec=sec, times=times, l=l,
                                totalreg=totalreg(), datetoday2=datetoday2, mess='Camera not available.')
 
+    print("[SUCCESS] attendancebtn: Camera opened successfully")
+    print("[INFO] attendancebtn: Starting face detection loop...")
+    
     ret = True
-    # temporal smoothing & lock-on
-    consecutive_counts = {}
-    current_lock = None
-    lock_grace = 10  # frames to keep lock if momentarily lost
-    lock_timer = 0
-    NEED_CONSEC = 5   # frames required to confirm identity
-
+    j = 1
+    flag = -1
+    frame_count = 0
+    
     while ret:
         ret, frame = cap.read()
-        faces, eyes_list = extract_faces_and_eyes(frame)
+        frame_count += 1
+        
+        if frame_count % 30 == 0:  # Log every 30 frames (about 1 second)
+            print(f"[DEBUG] attendancebtn: Processing frame {frame_count}")
+        
+        faces = extract_faces(frame)
+        if len(faces) > 0:
+            (x, y, w, h) = faces[0]
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 20), 2)
+            face = cv2.resize(frame[y:y + h, x:x + w], (50, 50))
+            
+            try:
+                print(f"[DEBUG] attendancebtn: Attempting to identify face in frame {frame_count}")
+                identified_person = identify_face(face.reshape(1, -1))[0]
+                
+                if '$' in identified_person:
+                    identified_person_name = identified_person.split('$')[0]
+                    identified_person_id = identified_person.split('$')[1]
+                    print(f"[INFO] attendancebtn: Identified person: {identified_person_name} (ID: {identified_person_id})")
+                else:
+                    identified_person_name = "Unknown"
+                    identified_person_id = "N/A"
+                    print(f"[WARNING] attendancebtn: Unknown person identified")
 
-        identified_person_name = "Unknown"
-        identified_person_id = "N/A"
+                if flag != identified_person:
+                    j = 1
+                    flag = identified_person
+                    print(f"[INFO] attendancebtn: New person detected, resetting counter")
 
-        if faces is not None and len(faces) > 0:
-            for i, (x, y, w, h) in enumerate(faces):
-                if w < 100 or h < 100:  # Skip very small faces
-                    continue
-                    
-                if i < len(eyes_list) and len(eyes_list[i]) > 0:
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 20), 2)
-                    for (ex, ey, ew, eh) in eyes_list[i]:
-                        cv2.rectangle(frame, (ex, ey), (ex + ew, ey + eh), (0, 255, 0), 2)
+                if j % 20 == 0:
+                    print(f"[INFO] attendancebtn: Marking attendance for {identified_person_name}")
+                    add_attendance(identified_person)
+            except Exception as e:
+                print(f"[ERROR] attendancebtn: Error processing identified person: {e}")
+                identified_person_name = "Error"
+                identified_person_id = "N/A"
 
-                    face_img = cv2.resize(frame[y:y + h, x:x + w], (224, 224))
-                    identified_person = identify_face(face_img)
-
-                    # If we already locked an identity, keep it as long as lock_timer remains
-                    if current_lock is not None and '$' in current_lock:
-                        identified_person_name, identified_person_id, *_ = current_lock.split('$')
-                        lock_timer = lock_grace
-                    else:
-                        # Build up consecutive evidence before locking and marking attendance
-                        if identified_person is not None and '$' in identified_person:
-                            consecutive_counts[identified_person] = consecutive_counts.get(identified_person, 0) + 1
-                            if consecutive_counts[identified_person] >= NEED_CONSEC:
-                                current_lock = identified_person
-                                consecutive_counts.clear()
-                                add_attendance(current_lock)
-                                identified_person_name, identified_person_id, *_ = current_lock.split('$')
-                        else:
-                            consecutive_counts.clear()
-
-                    cv2.putText(frame, f'Name: {identified_person_name}', (30, 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 20), 2, cv2.LINE_AA)
-                    cv2.putText(frame, f'ID: {identified_person_id}', (30, 60),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 20), 2, cv2.LINE_AA)
-                    cv2.putText(frame, 'Press Esc to close', (30, 90),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 127, 255), 2, cv2.LINE_AA)
-
+            cv2.putText(frame, f'Name: {identified_person_name}', (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 20),
+                        2,
+                        cv2.LINE_AA)
+            cv2.putText(frame, f'ID: {identified_person_id}', (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 20), 2,
+                        cv2.LINE_AA)
+            cv2.putText(frame, 'Press Space to close', (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 127, 255), 2,
+                        cv2.LINE_AA)
+            j += 1
         else:
-            # if no faces, decay the lock
-            if current_lock is not None:
-                lock_timer -= 1
-                if lock_timer <= 0:
-                    current_lock = None
+            if frame_count % 30 == 0:  # Log every 30 frames
+                print(f"[DEBUG] attendancebtn: No faces detected in frame {frame_count}")
+            j = 1
+            flag = -1
 
         cv2.namedWindow('Attendance', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Attendance', 800, 600)
-        cv2.setWindowProperty('Attendance', cv2.WND_PROP_TOPMOST, 1)
         cv2.imshow('Attendance', frame)
-
-        if cv2.waitKey(1) == 27:
+        # Close with Space instead of Esc per your preference
+        if cv2.waitKey(1) == 32:
+            print("[INFO] attendancebtn: Space key pressed, closing camera...")
             break
 
+    print("[INFO] attendancebtn: Releasing camera resources...")
     cap.release()
     cv2.destroyAllWindows()
-
+    
+    print("[INFO] attendancebtn: Fetching updated attendance data...")
     names, rolls, sec, times, dates, reg, l = extract_attendance()
+    print(f"[INFO] attendancebtn: Found {l} attendance records")
+    
     return render_template('Attendance.html', names=names, rolls=rolls, sec=sec, times=times, l=l,
                            datetoday2=datetoday2)
 
@@ -519,65 +450,102 @@ def adduserbtn():
     newusername = request.form['newusername']
     newuserid = request.form['newuserid']
     newusersection = request.form['newusersection']
+    
+    print(f"[INFO] adduserbtn: Starting user registration for {newusername} (ID: {newuserid}, Section: {newusersection})")
 
     # Open camera
+    print("[INFO] adduserbtn: Opening camera for face capture...")
     cap = cv2.VideoCapture(0)
     if cap is None or not cap.isOpened():
+        print("[ERROR] adduserbtn: Failed to open camera")
         return render_template('AddUser.html', mess='Camera not available.')
+
+    print("[SUCCESS] adduserbtn: Camera opened successfully")
 
     # Create user folder for storing images
     userimagefolder = f'static/faces/{newusername}${newuserid}${newusersection}'
     if not os.path.isdir(userimagefolder):
         os.makedirs(userimagefolder)
+        print(f"[INFO] adduserbtn: Created user folder: {userimagefolder}")
 
     # Check if user already exists in DB
+    print(f"[INFO] adduserbtn: Checking if user {newuserid} already exists in database...")
     cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
     cur.execute("SELECT * FROM student WHERE id = %s", (newuserid,))
     existing_user = cur.fetchone()
     if existing_user:
+        print(f"[WARNING] adduserbtn: User {newuserid} already exists in database")
         cap.release()
         cur.close()
         return render_template('AddUser.html', mess='User already exists in database.')
 
+    print(f"[INFO] adduserbtn: User {newuserid} is new, proceeding with face capture")
+
     images_captured = 0
     max_images = 100
+    frame_count = 0
+
+    print(f"[INFO] adduserbtn: Starting face capture loop (target: {max_images} images)")
 
     while images_captured < max_images:
         ret, frame = cap.read()
+        frame_count += 1
+        
         if not ret:
+            print(f"[WARNING] adduserbtn: Failed to read frame {frame_count}")
             break
+            
+        faces = extract_faces(frame)
+        if len(faces) > 0:
+            for (x, y, w, h) in faces:
+                face_img = cv2.resize(frame[y:y+h, x:x+w], (50,50))
+                image_path = os.path.join(userimagefolder, f'{images_captured}.jpg')
+                cv2.imwrite(image_path, face_img)
+                images_captured += 1
+                
+                if images_captured % 10 == 0:  # Log every 10 images
+                    print(f"[INFO] adduserbtn: Captured {images_captured}/{max_images} images")
 
-        faces, eyes_list = extract_faces_and_eyes(frame)
-        if faces is not None:
-            for i, (x, y, w, h) in enumerate(faces):
-                if i < len(eyes_list) and len(eyes_list[i]) > 0:
-                    face_img = cv2.resize(frame[y:y+h, x:x+w], (224,224))
-                    cv2.imwrite(
-                        os.path.join(userimagefolder, f'{images_captured}.jpg'),
-                        face_img
-                    )
-                    images_captured += 1
-
-                    cv2.rectangle(frame, (x,y), (x+w, y+h), (255,0,20), 2)
-                    for (ex, ey, ew, eh) in eyes_list[i]:
-                        cv2.rectangle(frame, (ex,ey), (ex+ew, ey+eh), (0,255,0), 2)
-
+                cv2.rectangle(frame, (x,y), (x+w, y+h), (255,0,20), 2)
+                
+                # Add delay to slow down capture process (0.2 seconds = 20 seconds for 100 images)
+                time.sleep(0.2)
+        else:
+            if frame_count % 30 == 0:  # Log every 30 frames
+                print(f"[DEBUG] adduserbtn: No faces detected in frame {frame_count}")
+                
         cv2.putText(frame, f'Images Captured: {images_captured}/{max_images}', (30,60),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,20), 2)
-        cv2.namedWindow("Collecting Face Data", cv2.WND_PROP_FULLSCREEN)
-        cv2.setWindowProperty("Collecting Face Data", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        cv2.putText(frame, 'Capturing slowly - 20 secs for 100 images', (30,90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+        
+        # Calculate and display estimated time remaining
+        if images_captured > 0:
+            remaining_images = max_images - images_captured
+            estimated_seconds = remaining_images * 0.2  # 0.2 seconds per image
+            cv2.putText(frame, f'Time remaining: ~{estimated_seconds:.1f} seconds', (30,120),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,165,0), 2)
+        
+        cv2.namedWindow("Collecting Face Data", cv2.WINDOW_NORMAL)
         cv2.imshow("Collecting Face Data", frame)
-        if cv2.waitKey(1) == 27:
+        # Close with Space instead of Esc per your preference
+        if cv2.waitKey(1) == 32:
+            print("[INFO] adduserbtn: Space key pressed, stopping capture...")
             break
 
+    print(f"[INFO] adduserbtn: Face capture completed. Total images: {images_captured}")
     cap.release()
     cv2.destroyAllWindows()
 
     if images_captured == 0:
+        print("[ERROR] adduserbtn: No images captured, cleaning up...")
         shutil.rmtree(userimagefolder)
         return render_template('AddUser.html', mess='Failed to capture valid face images.')
 
+    print(f"[SUCCESS] adduserbtn: Successfully captured {images_captured} face images")
+
     # Insert new user into MySQL
+    print(f"[INFO] adduserbtn: Inserting user {newuserid} into database...")
     cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
     cur.execute("""
         INSERT INTO student (name, id, section, status)
@@ -585,12 +553,14 @@ def adduserbtn():
     """, (newusername, newuserid, newusersection))
     mysql.connection.commit()
     cur.close()
+    print(f"[SUCCESS] adduserbtn: User {newuserid} inserted into database")
 
     # Retrain model immediately with new user
+    print("[INFO] adduserbtn: Retraining model with new user...")
     train_model()
-    load_cnn_model()  # Reload the model after training
 
     # Fetch updated unregistered students
+    print("[INFO] adduserbtn: Fetching updated unregistered students list...")
     cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
     cur.execute("SELECT * FROM student WHERE status='unregistered' ORDER BY id ASC")
     rows = cur.fetchall()
@@ -600,6 +570,9 @@ def adduserbtn():
     rolls = [str(row['id']) for row in rows]
     sec = [row['section'] for row in rows]
     l = len(rows)
+    
+    print(f"[INFO] adduserbtn: Found {l} unregistered students")
+    print(f"[SUCCESS] adduserbtn: User registration completed successfully")
 
     return render_template('UnregisterUserList.html',
                            names=names, rolls=rolls, sec=sec, l=l,
@@ -1002,9 +975,15 @@ def adminlog():
 
 # Main Function
 if __name__ == '__main__':
-    # Load or train model
-    load_cnn_model()
+    print("=" * 60)
+    print("🚀 Starting Face Recognition Attendance System")
+    print("=" * 60)
+    print(f"[INFO] Main: Current date: {datetoday}")
+    print(f"[INFO] Main: Current date (formatted): {datetoday2}")
+    print(f"[INFO] Main: Face detector loaded: {face_detector is not None}")
+    print(f"[INFO] Main: Static faces directory: {'static/faces' in os.listdir('.')}")
+    print(f"[INFO] Main: KNN model will be trained on-demand when needed")
+    print("=" * 60)
     
-    if cnn_model is None:
-        print("[INFO] No model found, will train when needed.")
+    # KNN model is trained on-demand when needed
     app.run(port=5001, debug=True)
